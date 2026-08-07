@@ -5,14 +5,15 @@
 Usage:
   @ fix the failing tests
   @ explain this stack trace
-  @ use claude
-  @ new
-  @ status
-  @ forget
+  @ --use claude
+  @ --new
+  @ --status
+  @ --forget
 
 Behavior:
   - One persistent conversation per backend per git repository (or current directory).
-  - Backend is chosen per project: @ use codex|claude|opencode
+  - Backend is chosen per project: @ --use codex|claude|opencode
+  - Commands are always '--' prefixed; everything else is a prompt.
   - Piped stdin becomes labeled context:  git diff | @ "review this"
   - Normal shell commands remain normal shell commands.
   - State is stored in:
@@ -242,14 +243,18 @@ def set_conversation(root: Path, state: dict, backend: str, conv_id: str) -> Non
 
 def forget_conversation(root: Path, state: dict, backend: str) -> None:
     state.pop(backend, None)
-    others = any(state.get(b) for b in BACKENDS)
-    if not others and not state.get("backend"):
+    keep = (
+        any(state.get(b) for b in BACKENDS)
+        or state.get("backend")
+        or state.get("saved")
+    )
+    if keep:
+        save_state(root, state)
+    else:
         try:
             state_file(root).unlink()
         except FileNotFoundError:
             pass
-    else:
-        save_state(root, state)
 
 
 INTERRUPT_EXIT = 130  # 128 + SIGINT, the usual shell convention
@@ -315,12 +320,18 @@ def print_help() -> None:
 
 Usage:
   @ <instruction>       Ask the agent to work in the current repo/directory
-  @ use <backend>       Choose backend: codex, claude or opencode
-  @ new                 Start a fresh conversation for this repo
-  @ forget              Forget the saved conversation for this repo
-  @ status              Show the repo, backend, and saved conversations
-  @ spinner-test [name] Test the thinking animation (dots..dots11, random default)
-  @ help                Show this help
+  @ --use <backend>     Choose backend: codex, claude or opencode
+  @ --new               Start a fresh conversation for this repo
+  @ --save <name>       Name the current conversation
+  @ --switch <name>     Switch to a named conversation
+  @ --list              List named conversations for this repo
+  @ --forget [name]     Forget the current conversation (or a named one)
+  @ --status            Show the repo, backend, and saved conversations
+  @ --spinner-test [x]  Test the thinking animation (dots..dots11, random default)
+  @ --help              Show this help
+
+Commands always start with '--'; anything else is sent to the agent,
+so prompts like '@ save this data to a file' are never intercepted.
 
 Examples:
   @ inspect this repo and find the auth bug
@@ -331,7 +342,7 @@ Examples:
   pytest 2>&1 | @ "why is this failing"
 
 Backend:
-  Per-repo via '@ use ...', else $AT_AGENT_BACKEND, else codex.
+  Per-repo via '@ --use ...', else $AT_AGENT_BACKEND, else codex.
 
 State:
   ~/.local/state/at-agent/   (or $XDG_STATE_HOME/at-agent)
@@ -555,7 +566,7 @@ def stream_agent(
         eprint("@: interrupted; conversation saved, ask again to continue")
     elif rc != 0 and had_conversation:
         eprint(f"@: {label} resume failed.")
-        eprint(f"If the saved {noun} is stale, run: @ new")
+        eprint(f"If the saved {noun} is stale, run: @ --new")
 
     return rc
 
@@ -665,37 +676,118 @@ def main(argv: list[str]) -> int:
         print_help()
         return 0
 
-    command = argv[1].lower()
+    first = argv[1]
 
-    if command in ("help", "--help", "-h"):
+    # Commands are always '--' prefixed; anything else is a prompt for
+    # the agent, so "@ save this data to a file" is never mistaken for
+    # the --save command.
+    if not first.startswith("-"):
+        prompt = " ".join(argv[1:]).strip()
+        if not prompt:
+            print_help()
+            return 0
+        piped = read_piped_stdin()
+        if piped:
+            prompt = f"{prompt}\n\nPiped input:\n{piped}"
+        state = load_state(root)
+        backend = resolve_backend(state)
+        return RUNNERS[backend](root, prompt, state)
+
+    if first in ("-h", "--help"):
         print_help()
         return 0
+
+    if not first.startswith("--"):
+        eprint(f"@: unknown option '{first}' (see: @ --help)")
+        return 2
+
+    command = first[2:].lower()
+    args = argv[2:]
 
     state = load_state(root)
     backend = resolve_backend(state)
 
     if command == "status":
+        if args:
+            eprint("@: usage: @ --status")
+            return 2
         print(f"root:    {root}")
         print(f"backend: {backend}")
         for b in BACKENDS:
             conv = get_conversation(state, b) or "(new conversation)"
             marker = "*" if b == backend else " "
             print(f"{marker} {b}:  {conv}")
+        saved = state.get("saved") or {}
+        if saved:
+            print(f"saved:   {len(saved)} conversation(s), see: @ --list")
         print(f"state:   {state_file(root)}")
         return 0
 
     if command == "use":
-        choice = argv[2].lower() if len(argv) > 2 else ""
+        choice = args[0].lower() if len(args) == 1 else ""
         if choice not in BACKENDS:
-            eprint(f"@: usage: @ use {'|'.join(BACKENDS)}")
+            eprint(f"@: usage: @ --use {'|'.join(BACKENDS)}")
             return 2
         state["backend"] = choice
         save_state(root, state)
         print(f"@ backend for {root}: {choice}")
         return 0
 
+    if command == "save":
+        name = args[0].strip() if len(args) == 1 else ""
+        if not name:
+            eprint("@: usage: @ --save <name>")
+            return 2
+        conv = get_conversation(state, backend)
+        if not conv:
+            eprint(f"@: no active {backend} conversation to save")
+            return 1
+        existed = name in (state.get("saved") or {})
+        state.setdefault("saved", {})[name] = {"backend": backend, "id": conv}
+        save_state(root, state)
+        verb = "updated" if existed else "saved"
+        print(f"@ {verb} conversation '{name}' ({backend})")
+        return 0
+
+    if command == "switch":
+        name = args[0].strip() if len(args) == 1 else ""
+        if not name:
+            eprint("@: usage: @ --switch <name>")
+            return 2
+        entry = (state.get("saved") or {}).get(name)
+        target = entry.get("backend") if isinstance(entry, dict) else None
+        conv_id = entry.get("id") if isinstance(entry, dict) else None
+        if target not in BACKENDS or not conv_id:
+            eprint(f"@: no saved conversation named '{name}' (see: @ --list)")
+            return 1
+        state["backend"] = target
+        state[target] = {CONV_KEYS[target]: conv_id}
+        save_state(root, state)
+        print(f"@ switched to '{name}' ({target})")
+        return 0
+
+    if command == "list":
+        if args:
+            eprint("@: usage: @ --list")
+            return 2
+        saved = state.get("saved") or {}
+        if not saved:
+            print("no saved conversations for this project (use: @ --save <name>)")
+            return 0
+        current = get_conversation(state, backend)
+        for name in sorted(saved):
+            entry = saved[name] if isinstance(saved[name], dict) else {}
+            target = entry.get("backend", "?")
+            conv_id = entry.get("id", "?")
+            marker = "*" if (target == backend and conv_id == current) else " "
+            print(f"{marker} {name}  [{target}]  {conv_id}")
+        return 0
+
     if command == "spinner-test":
-        style = argv[2] if len(argv) > 2 else None
+        if len(args) > 1:
+            eprint("@: usage: @ --spinner-test [style]")
+            return 2
+        style = args[0] if args else None
         spinner = Spinner(style)
         spinner.start()
         try:
@@ -705,7 +797,21 @@ def main(argv: list[str]) -> int:
         print(f"spinner test complete ({spinner.style})")
         return 0
 
+    if command == "forget" and len(args) == 1:
+        name = args[0].strip()
+        saved = state.get("saved") or {}
+        if name not in saved:
+            eprint(f"@: no saved conversation named '{name}' (see: @ --list)")
+            return 1
+        del saved[name]
+        save_state(root, state)
+        print(f"@ forgot saved conversation '{name}'")
+        return 0
+
     if command in ("new", "forget", "reset"):
+        if args:
+            eprint(f"@: usage: @ --{command}" + (" [name]" if command == "forget" else ""))
+            return 2
         forget_conversation(root, state, backend)
         if command == "new":
             print(f"@ new {backend} conversation for {root}")
@@ -713,16 +819,8 @@ def main(argv: list[str]) -> int:
             print(f"@ forgot {backend} conversation for {root}")
         return 0
 
-    prompt = " ".join(argv[1:]).strip()
-    if not prompt:
-        print_help()
-        return 0
-
-    piped = read_piped_stdin()
-    if piped:
-        prompt = f"{prompt}\n\nPiped input:\n{piped}"
-
-    return RUNNERS[backend](root, prompt, state)
+    eprint(f"@: unknown command '--{command}' (see: @ --help)")
+    return 2
 
 
 if __name__ == "__main__":

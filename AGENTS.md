@@ -75,18 +75,39 @@ State file schema:
 
 Legacy state files with a top-level `thread_id` are migrated on load: the value is treated as `codex.thread_id`. Switching backends must not discard the other backend's saved conversation.
 
-`@ new` and `@ forget` reset only the active backend's conversation.
+`@ --new` and `@ --forget` reset only the active backend's conversation.
 
 Commands:
 
 ```text
-@ status             Show project root, backend, conversation IDs, and state file
-@ use <backend>      Choose the backend: codex, claude or opencode
-@ new                Start a fresh conversation for the current project
-@ forget             Forget the current project's saved conversation
-@ spinner-test [x]   Test the thinking animation without invoking the backend
-@ help               Show usage
+@ --status             Show project root, backend, conversation IDs, and state file
+@ --use <backend>      Choose the backend: codex, claude or opencode
+@ --new                Start a fresh conversation for the current project
+@ --save <name>        Name the active backend's current conversation
+@ --switch <name>      Activate a named conversation (also switches backend)
+@ --list               List named conversations for the current project
+@ --forget [name]      Forget the current conversation, or delete a named one
+@ --spinner-test [x]   Test the thinking animation without invoking the backend
+@ --help               Show usage
 ```
+
+## Named conversations
+
+`@ --save <name>` records the active backend's conversation ID under a user-chosen name in the project state file (`saved`: name → `{backend, id}`). `@ --switch <name>` restores it: the backend becomes the saved entry's backend and its current conversation is set to the saved ID. `@ --list` shows all names for the project, marking the one matching the active conversation with `*`. `@ --forget <name>` deletes a name (the conversation itself stays with the backend).
+
+This is wrapper-level and backend-uniform: it relies only on resume-by-ID, which all backends support. It does not enumerate sessions created outside `@`.
+
+State file schema with saved names:
+
+```json
+{
+  "saved": {
+    "auth-bug": {"backend": "claude", "id": "<session-id>"}
+  }
+}
+```
+
+Prompt-collision rule: commands are recognized ONLY with a `--` prefix. Any first argument not starting with `-` is part of a prompt, so `@ save this data to a file` or `@ list the files here` always go to the agent. `-h` is accepted as an alias for `--help`; any other `-`/`--` token that is not a known command is a usage error (exit 2), never a prompt.
 
 ## Piped input
 
@@ -105,7 +126,7 @@ This makes `git diff | @ "review this change"` deterministic on every backend. W
 
 Resolution order:
 
-1. `backend` in the project state file (set via `@ use ...`);
+1. `backend` in the project state file (set via `@ --use ...`);
 2. the `AT_AGENT_BACKEND` environment variable;
 3. default: `codex`.
 
@@ -125,7 +146,7 @@ Do not parse human-oriented terminal output when structured JSON events are avai
 
 Save a newly reported thread ID as soon as it is received so that subsequent `@` calls can resume the conversation.
 
-If a saved thread can no longer be resumed, provide a concise error and tell the user that `@ new` starts a fresh conversation.
+If a saved thread can no longer be resumed, provide a concise error and tell the user that `@ --new` starts a fresh conversation.
 
 ## Claude Code integration
 
@@ -145,7 +166,7 @@ Relevant stream events:
 - `{"type": "result", "is_error": ..., "result": ...}` — final event. Do not reprint `result` text (assistant text was already streamed); surface errors only.
 - Noise events (`system/thinking_tokens`, `rate_limit_event`, etc.) must be silently ignored.
 
-If a saved session can no longer be resumed, Claude exits non-zero; provide the same concise `@ new` hint as for Codex.
+If a saved session can no longer be resumed, Claude exits non-zero; provide the same concise `@ --new` hint as for Codex.
 
 Do not pass permission-widening flags (e.g. `--dangerously-skip-permissions`) by default.
 
@@ -195,7 +216,7 @@ Important behavior:
 - If no interactive terminal is available, silently disable the animation.
 - Never emit spinner escape sequences into redirected or piped output.
 
-`@ spinner-test [style]` should animate for roughly three seconds (a random style, or the named one) and then print:
+`@ --spinner-test [style]` should animate for roughly three seconds (a random style, or the named one) and then print:
 
 ```text
 spinner test complete (<style>)
@@ -301,26 +322,43 @@ Do not add elaborate abstractions unless they make terminal concurrency or Codex
 At minimum, manually verify:
 
 ```sh
-@ help
-@ status
-@ spinner-test
+@ --help
+@ --status
+@ --spinner-test
 @ say hello
 @ say something that follows from my previous request
-@ new
+@ --new
 ```
 
 Backend switching (repeat the flow for each backend: claude, opencode, codex):
 
 ```sh
-@ use claude
-@ status                 # backend: claude, other conversations still listed
+@ --use claude
+@ --status                 # backend: claude, other conversations still listed
 @ say hello
 @ say something that follows from my previous request
-@ use codex
-@ status                 # old Codex thread still saved
+@ --use codex
+@ --status                 # old Codex thread still saved
 ```
 
 Also verify legacy state migration: a state file containing only `{"root": ..., "thread_id": ...}` must surface the thread as the Codex conversation without data loss.
+
+Named conversations:
+
+```sh
+@ say hello
+@ --save first
+@ --new
+@ say hi again
+@ --save second
+@ --list                   # two names, '*' on second
+@ --switch first
+@ "what did I first ask you to say?"   # must recall the 'first' thread
+@ --forget second
+@ --list                   # only 'first' remains
+@ list the files in this directory    # a prompt: goes to the agent, NOT --list
+@ save this data to a file            # a prompt: goes to the agent, NOT --save
+```
 
 Piped input:
 
@@ -333,7 +371,7 @@ echo hi | @                      # no instruction: prints help, no hang
 Also verify:
 
 ```sh
-@ spinner-test > /tmp/out
+@ --spinner-test > /tmp/out
 ```
 
 The spinner should remain on the terminal when appropriate and must not contaminate `/tmp/out`.

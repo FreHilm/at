@@ -37,11 +37,11 @@ This copies `@` to `~/.local/bin/@` and makes it executable. If `~/.local/bin` i
 
 ```text
 @ <instruction>       Ask the agent to work in the current repo/directory
-@ use codex|claude    Choose the backend for this repo
-@ new                 Start a fresh conversation for this repo
-@ forget              Forget the saved conversation for this repo
-@ status              Show the repo, backend, and saved conversations
-@ help                Show this help
+@ --use codex|claude    Choose the backend for this repo
+@ --new                 Start a fresh conversation for this repo
+@ --forget              Forget the saved conversation for this repo
+@ --status              Show the repo, backend, and saved conversations
+@ --help                Show this help
 ```
 
 Anything that isn't one of the built-in commands is sent to the agent as a prompt:
@@ -58,26 +58,26 @@ Anything that isn't one of the built-in commands is sent to the agent as a promp
 ```sh
 @ say hello
 @ say something that follows from my previous request   # same conversation
-@ new                                                    # start over
+@ --new                                                    # start over
 ```
 
-If a saved conversation can no longer be resumed (for example, it went stale), `@` prints a short error and suggests `@ new`.
+If a saved conversation can no longer be resumed (for example, it went stale), `@` prints a short error and suggests `@ --new`.
 
 ### Backends
 
 The backend is resolved in this order:
 
-1. The project setting made with `@ use codex` or `@ use claude`
+1. The project setting made with `@ --use codex` or `@ --use claude`
 2. The `AT_AGENT_BACKEND` environment variable
 3. Default: `codex`
 
 Each backend keeps its own conversation, so switching back and forth doesn't lose either one:
 
 ```sh
-@ use claude
+@ --use claude
 @ say hello
-@ use codex        # the old Codex thread is still saved
-@ status
+@ --use codex        # the old Codex thread is still saved
+@ --status
 ```
 
 ## Output
