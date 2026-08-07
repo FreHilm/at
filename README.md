@@ -53,10 +53,16 @@ kubectl logs api-7d4b | @ "what went wrong here"
 ## Install
 
 ```sh
-./install-at-agent.sh
+curl -fsSL https://raw.githubusercontent.com/FreHilm/at/main/install-at-agent.sh | sh
 ```
 
-This copies `@` to `~/.local/bin/@`. If that directory isn't on your `PATH`, the script tells you exactly what to add.
+Or with `wget`:
+
+```sh
+wget -qO- https://raw.githubusercontent.com/FreHilm/at/main/install-at-agent.sh | sh
+```
+
+The installer checks that `python3` is available, downloads `@` to `~/.local/bin/@`, and tells you exactly what to add if that directory isn't on your `PATH`. From a cloned repo, `./install-at-agent.sh` installs the local copy instead.
 
 You'll also need at least one backend CLI installed and authenticated:
 
