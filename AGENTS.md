@@ -83,7 +83,7 @@ Commands:
 @ use codex|claude   Choose the backend for the current project
 @ new                Start a fresh conversation for the current project
 @ forget             Forget the current project's saved conversation
-@ spinner-test       Test the thinking animation without invoking the backend
+@ spinner-test [x]   Test the thinking animation without invoking the backend
 @ help               Show usage
 ```
 
@@ -150,20 +150,17 @@ Do not pass permission-widening flags (e.g. `--dangerously-skip-permissions`) by
 
 ## Thinking indicator
 
-While the backend agent is working and there is no user-visible output, display a small rolling-dot animation:
+While the backend agent is working and there is no user-visible output, display a small single-character spinner animation.
 
-```text
-.  
-.. 
-...
- ..
-  .
+The frame data is the `dots` through `dots11` styles from [cli-spinners](https://github.com/sindresorhus/cli-spinners) (MIT, Sindre Sorhus — see `ATTRIBUTIONS.md`), embedded directly in `@` to keep the tool single-file.
 
-```
+Style selection:
+
+- Each invocation picks one of the eleven styles at random.
+- `dots` is the default style: an explicitly requested but unknown style name falls back to it.
+- Frame intervals come from the upstream definitions (80–100 ms per style).
 
 The frames repeat continuously.
-
-Target interval is approximately 180 ms per frame.
 
 Important behavior:
 
@@ -178,10 +175,10 @@ Important behavior:
 - If no interactive terminal is available, silently disable the animation.
 - Never emit spinner escape sequences into redirected or piped output.
 
-`@ spinner-test` should animate for roughly three seconds and then print:
+`@ spinner-test [style]` should animate for roughly three seconds (a random style, or the named one) and then print:
 
 ```text
-spinner test complete
+spinner test complete (<style>)
 ```
 
 Use this command to debug terminal rendering independently of the backends.
@@ -253,6 +250,12 @@ Do not add flags that bypass approvals, sandboxing, or safety controls merely to
 Do not log prompts, command output, secrets, or repository content into the state directory.
 
 Persist only the minimum information required to resume a conversation.
+
+## Licensing
+
+The project is licensed under the MIT License (`LICENSE`).
+
+Third-party material embedded in `@` (currently the cli-spinners frame data) must be attributed in `ATTRIBUTIONS.md` with its license text. Keep the `@` implementation single-file; embed data rather than vendoring extra source files.
 
 ## Compatibility
 
