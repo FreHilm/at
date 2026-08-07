@@ -225,6 +225,29 @@ def forget_conversation(root: Path, state: dict, backend: str) -> None:
         save_state(root, state)
 
 
+INTERRUPT_EXIT = 130  # 128 + SIGINT, the usual shell convention
+
+
+def reap_child(proc: subprocess.Popen) -> None:
+    """Stop the backend child after Ctrl-C without leaving a zombie.
+
+    A terminal Ctrl-C usually reaches the child too (same foreground
+    process group), so terminate() is often a no-op; it matters when
+    only the wrapper was signalled.
+    """
+    try:
+        proc.terminate()
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+            proc.wait(timeout=1)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    except OSError:
+        pass
+
+
 def agent_stdin():
     """stdin for the backend subprocess.
 
@@ -441,6 +464,7 @@ def run_codex(root: Path, prompt: str, state: dict) -> int:
     spinner = Spinner()
     _active_spinner = spinner
     spinner.start()
+    interrupted = False
 
     try:
         assert proc.stdout is not None
@@ -465,11 +489,17 @@ def run_codex(root: Path, prompt: str, state: dict) -> int:
             render_codex_event(event)
 
         rc = proc.wait()
+    except KeyboardInterrupt:
+        reap_child(proc)
+        rc = INTERRUPT_EXIT
+        interrupted = True
     finally:
         spinner.stop()
         _active_spinner = None
 
-    if rc != 0 and thread_id:
+    if interrupted:
+        eprint("@: interrupted; conversation saved, ask again to continue")
+    elif rc != 0 and thread_id:
         eprint("@: Codex resume failed.")
         eprint("If the saved thread is stale, run: @ new")
     elif rc == 0 and seen_thread:
@@ -520,6 +550,7 @@ def run_claude(root: Path, prompt: str, state: dict) -> int:
     spinner = Spinner()
     _active_spinner = spinner
     spinner.start()
+    interrupted = False
 
     try:
         assert proc.stdout is not None
@@ -544,11 +575,17 @@ def run_claude(root: Path, prompt: str, state: dict) -> int:
             render_claude_event(event, bash_tool_ids)
 
         rc = proc.wait()
+    except KeyboardInterrupt:
+        reap_child(proc)
+        rc = INTERRUPT_EXIT
+        interrupted = True
     finally:
         spinner.stop()
         _active_spinner = None
 
-    if rc != 0 and session_id:
+    if interrupted:
+        eprint("@: interrupted; conversation saved, ask again to continue")
+    elif rc != 0 and session_id:
         eprint("@: Claude resume failed.")
         eprint("If the saved session is stale, run: @ new")
     elif rc == 0 and seen_session:
@@ -627,4 +664,8 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
+    try:
+        raise SystemExit(main(sys.argv))
+    except KeyboardInterrupt:
+        print("@: interrupted", file=sys.stderr)
+        raise SystemExit(INTERRUPT_EXIT)

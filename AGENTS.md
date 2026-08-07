@@ -240,6 +240,8 @@ Always clear the spinner in `finally`-style cleanup paths, including failures an
 
 Avoid races where the spinner writes over agent output.
 
+Ctrl-C must never print a Python traceback. On interrupt: terminate and reap the backend child, clear the spinner, print a one-line `@: interrupted; conversation saved, ask again to continue` notice, and exit with status 130 (128 + SIGINT). The conversation ID is saved eagerly at stream start, so an interrupted question can be re-asked in the same conversation.
+
 If output rendering becomes more complex, centralize terminal writes rather than adding independent writers.
 
 ## Security
