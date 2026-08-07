@@ -87,6 +87,19 @@ Commands:
 @ help               Show usage
 ```
 
+## Piped input
+
+When stdin is not a TTY, the wrapper reads it and appends it to the prompt as a labeled block. The read is bounded by UTF-8 byte length, not character count: the prompt travels as a single argv argument, and Linux caps one argument at 128 KiB (`MAX_ARG_STRLEN`), so the limit must stay safely below that in bytes.
+
+```text
+<instruction>
+
+Piped input:
+<stdin data>
+```
+
+This makes `git diff | @ "review this change"` deterministic on every backend. When stdin is not a TTY the backend subprocess receives `stdin=DEVNULL` (the wrapper already consumed the pipe); an interactive terminal stdin is inherited unchanged so backends behave exactly as if run directly. Oversized input is truncated with a visible warning; undecodable bytes are replaced, never fatal. Piped stdin with no instruction argument still just prints help.
+
 ## Backend selection
 
 Resolution order:
@@ -212,7 +225,8 @@ The wrapper should tolerate:
 - redirected stderr;
 - terminals where stderr itself is not reported as a TTY;
 - stale or malformed local state files;
-- unexpected non-JSON lines from Codex.
+- unexpected non-JSON lines from Codex;
+- piped stdin that is empty, binary, or very large.
 
 Use argument arrays with `subprocess`; do not construct shell command strings.
 
@@ -282,6 +296,14 @@ Backend switching:
 ```
 
 Also verify legacy state migration: a state file containing only `{"root": ..., "thread_id": ...}` must surface the thread as the Codex conversation without data loss.
+
+Piped input:
+
+```sh
+ls -l | @ "how many files, answer with a number only"
+echo "" | @ "say hello"          # empty pipe: prompt unchanged, no hang
+echo hi | @                      # no instruction: prints help, no hang
+```
 
 Also verify:
 

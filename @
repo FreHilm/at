@@ -13,6 +13,7 @@ Usage:
 Behavior:
   - One persistent conversation per backend per git repository (or current directory).
   - Backend is chosen per project: @ use codex | @ use claude
+  - Piped stdin becomes labeled context:  git diff | @ "review this"
   - Normal shell commands remain normal shell commands.
   - State is stored in:
       ${XDG_STATE_HOME:-~/.local/state}/at-agent/
@@ -32,6 +33,11 @@ from pathlib import Path
 
 BACKENDS = ("codex", "claude")
 DEFAULT_BACKEND = "codex"
+
+# Piped input is embedded in the prompt, which is passed as a single
+# argv argument. Linux caps one argument at 128 KiB (MAX_ARG_STRLEN),
+# so bound the UTF-8 byte length, not the character count.
+MAX_STDIN_BYTES = 100_000
 
 # Each backend names its resumable conversation differently.
 CONV_KEYS = {"codex": "thread_id", "claude": "session_id"}
@@ -219,6 +225,40 @@ def forget_conversation(root: Path, state: dict, backend: str) -> None:
         save_state(root, state)
 
 
+def agent_stdin():
+    """stdin for the backend subprocess.
+
+    Inherit a real terminal (backends stay quiet and behave as if run
+    directly). Anything else was already consumed by read_piped_stdin,
+    so hand the backend DEVNULL rather than a drained pipe.
+    """
+    return None if sys.stdin.isatty() else subprocess.DEVNULL
+
+
+def read_piped_stdin() -> str:
+    """Return piped stdin as text, or "" when stdin is a terminal.
+
+    The data is embedded into the prompt so the backend receives one
+    unambiguous instruction; the backend subprocess itself gets DEVNULL
+    and never reads the pipe directly.
+    """
+    if sys.stdin.isatty():
+        return ""
+    try:
+        sys.stdin.reconfigure(errors="replace")
+        # UTF-8 is at least one byte per character, so this reads enough
+        # to detect any input whose encoded size exceeds the byte limit.
+        data = sys.stdin.read(MAX_STDIN_BYTES + 1)
+    except (OSError, AttributeError):
+        return ""
+    encoded = data.encode("utf-8", "replace")
+    if len(encoded) > MAX_STDIN_BYTES:
+        data = encoded[:MAX_STDIN_BYTES].decode("utf-8", "ignore")
+        data += "\n[stdin truncated]"
+        eprint(f"@: piped input truncated to {MAX_STDIN_BYTES} bytes")
+    return data.strip("\n")
+
+
 def print_help() -> None:
     print(
         """@ — shell-native AI agent (Codex or Claude Code)
@@ -237,6 +277,8 @@ Examples:
   git diff
   pytest
   @ keep the existing API and fix it another way
+  git diff | @ "review this change"
+  pytest 2>&1 | @ "why is this failing"
 
 Backend:
   Per-repo via '@ use ...', else $AT_AGENT_BACKEND, else codex.
@@ -383,6 +425,7 @@ def run_codex(root: Path, prompt: str, state: dict) -> int:
     try:
         proc = subprocess.Popen(
             cmd,
+            stdin=agent_stdin(),
             stdout=subprocess.PIPE,
             stderr=None,  # keep Codex diagnostics visible
             text=True,
@@ -459,6 +502,7 @@ def run_claude(root: Path, prompt: str, state: dict) -> int:
     try:
         proc = subprocess.Popen(
             cmd,
+            stdin=agent_stdin(),
             stdout=subprocess.PIPE,
             stderr=None,  # keep Claude diagnostics visible
             text=True,
@@ -574,6 +618,10 @@ def main(argv: list[str]) -> int:
     if not prompt:
         print_help()
         return 0
+
+    piped = read_piped_stdin()
+    if piped:
+        prompt = f"{prompt}\n\nPiped input:\n{piped}"
 
     return RUNNERS[backend](root, prompt, state)
 
