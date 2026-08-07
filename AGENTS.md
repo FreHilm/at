@@ -2,7 +2,7 @@
 
 ## Project overview
 
-This repository contains `@`, a tiny shell-native wrapper around AI coding agent CLIs. It supports two backends: the OpenAI Codex CLI and Anthropic's Claude Code CLI, selected per project.
+This repository contains `@`, a tiny shell-native wrapper around AI coding agent CLIs. It supports three backends — the OpenAI Codex CLI, Anthropic's Claude Code CLI, and opencode — selected per project.
 
 The goal is to make an AI coding agent feel like a native shell primitive rather than a separate interactive application.
 
@@ -68,7 +68,8 @@ State file schema:
   "root": "/path/to/project",
   "backend": "claude",
   "codex":  {"thread_id": "..."},
-  "claude": {"session_id": "..."}
+  "claude": {"session_id": "..."},
+  "opencode": {"session_id": "..."}
 }
 ```
 
@@ -80,7 +81,7 @@ Commands:
 
 ```text
 @ status             Show project root, backend, conversation IDs, and state file
-@ use codex|claude   Choose the backend for the current project
+@ use <backend>      Choose the backend: codex, claude or opencode
 @ new                Start a fresh conversation for the current project
 @ forget             Forget the current project's saved conversation
 @ spinner-test [x]   Test the thinking animation without invoking the backend
@@ -148,6 +149,25 @@ If a saved session can no longer be resumed, Claude exits non-zero; provide the 
 
 Do not pass permission-widening flags (e.g. `--dangerously-skip-permissions`) by default.
 
+## opencode integration
+
+The wrapper invokes the opencode CLI in non-interactive run mode with raw JSON events:
+
+```text
+opencode run --format json --dir <project-root> <prompt>
+```
+
+For an existing project conversation it appends `--session <session-id>`.
+
+Relevant stream events (every event carries a top-level `sessionID` — save it eagerly on first sight):
+
+- `{"type": "text", "part": {"text": ...}}` — assistant text; print to stdout.
+- `{"type": "tool_use", "part": {"tool": ..., "state": {...}}}` — one event per tool call with `status`, `input`, `output`, and `metadata.exit` all included. Render only `status == "completed"`. `tool == "bash"` → `  $ <input.command>` plus output (and `[exit N]` when non-zero) on stderr; other tools → compact `[tool title]` note on stderr.
+- `{"type": "step_start"}` / `{"type": "step_finish"}` — bookkeeping; silent.
+- `{"type": "error"}` — `@ error: ...` on stderr.
+
+Do not pass `--auto` (auto-approves permissions; opencode itself marks it dangerous). Do not pass model/agent flags; opencode's own configuration governs those.
+
 ## Thinking indicator
 
 While the backend agent is working and there is no user-visible output, display a small single-character spinner animation.
@@ -211,7 +231,7 @@ Keep dependencies limited to the Python standard library unless adding a depende
 
 Expected external commands:
 
-- `codex` and/or `claude` (only the active backend needs to be installed)
+- `codex`, `claude` and/or `opencode` (only the active backend needs to be installed)
 - `git` (optional; behavior must still work outside Git repositories)
 
 The wrapper should tolerate:
@@ -289,11 +309,11 @@ At minimum, manually verify:
 @ new
 ```
 
-Backend switching:
+Backend switching (repeat the flow for each backend: claude, opencode, codex):
 
 ```sh
 @ use claude
-@ status                 # backend: claude, Codex conversation still listed
+@ status                 # backend: claude, other conversations still listed
 @ say hello
 @ say something that follows from my previous request
 @ use codex

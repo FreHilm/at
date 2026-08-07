@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-@ — a tiny shell-native wrapper around AI coding agents (Codex CLI or Claude Code).
+@ — a tiny shell-native wrapper around AI coding agents (Codex, Claude Code, opencode).
 
 Usage:
   @ fix the failing tests
@@ -12,7 +12,7 @@ Usage:
 
 Behavior:
   - One persistent conversation per backend per git repository (or current directory).
-  - Backend is chosen per project: @ use codex | @ use claude
+  - Backend is chosen per project: @ use codex|claude|opencode
   - Piped stdin becomes labeled context:  git diff | @ "review this"
   - Normal shell commands remain normal shell commands.
   - State is stored in:
@@ -32,7 +32,7 @@ import threading
 import time
 from pathlib import Path
 
-BACKENDS = ("codex", "claude")
+BACKENDS = ("codex", "claude", "opencode")
 DEFAULT_BACKEND = "codex"
 
 # Piped input is embedded in the prompt, which is passed as a single
@@ -41,7 +41,7 @@ DEFAULT_BACKEND = "codex"
 MAX_STDIN_BYTES = 100_000
 
 # Each backend names its resumable conversation differently.
-CONV_KEYS = {"codex": "thread_id", "claude": "session_id"}
+CONV_KEYS = {"codex": "thread_id", "claude": "session_id", "opencode": "session_id"}
 
 
 # Spinner frames: the "dots" family (dots through dots11) from
@@ -311,11 +311,11 @@ def read_piped_stdin() -> str:
 
 def print_help() -> None:
     print(
-        """@ — shell-native AI agent (Codex or Claude Code)
+        """@ — shell-native AI agent (Codex, Claude Code or opencode)
 
 Usage:
   @ <instruction>       Ask the agent to work in the current repo/directory
-  @ use codex|claude    Choose the backend for this repo
+  @ use <backend>       Choose backend: codex, claude or opencode
   @ new                 Start a fresh conversation for this repo
   @ forget              Forget the saved conversation for this repo
   @ status              Show the repo, backend, and saved conversations
@@ -338,7 +338,7 @@ State:
 
 Requires:
   python3
-  codex and/or claude
+  codex, claude and/or opencode
 """
     )
 
@@ -449,43 +449,76 @@ def render_claude_event(event: dict, bash_tool_ids: set[str]) -> None:
     # rate_limit_event, stream noise) are intentionally silent.
 
 
-def run_codex(root: Path, prompt: str, state: dict) -> int:
-    if shutil.which("codex") is None:
-        eprint("@: 'codex' was not found on PATH.")
-        eprint("Install/authenticate the OpenAI Codex CLI first, then retry.")
-        return 127
+def render_opencode_event(event: dict) -> None:
+    etype = event.get("type")
+    part = event.get("part") or {}
 
-    thread_id = get_conversation(state, "codex")
+    if etype == "text":
+        text = part.get("text")
+        if text:
+            oprint(text)
+        return
 
-    base = [
-        "codex",
-        "exec",
-        "--json",
-        "--color",
-        "never",
-        "-C",
-        str(root),
-    ]
+    if etype == "tool_use":
+        # One event per tool call, carrying input, output and exit code.
+        tool_state = part.get("state") or {}
+        if tool_state.get("status") != "completed":
+            return
+        tool = part.get("tool") or "tool"
+        tool_input = tool_state.get("input") or {}
+        if tool == "bash" and tool_input.get("command"):
+            eprint(f"  $ {tool_input['command']}")
+            output = tool_state.get("output")
+            if output and output.strip():
+                eprint(output.rstrip())
+            exit_code = (tool_state.get("metadata") or {}).get("exit")
+            if exit_code not in (None, 0):
+                eprint(f"  [exit {exit_code}]")
+        else:
+            title = (
+                tool_state.get("title")
+                or tool_input.get("filePath")
+                or tool_input.get("path")
+                or ""
+            )
+            eprint(f"  [{tool} {title}]".rstrip() if title else f"  [{tool}]")
+        return
 
-    if thread_id:
-        cmd = base + ["resume", thread_id, prompt]
-    else:
-        cmd = base + [prompt]
+    if etype == "error":
+        msg = event.get("error") or part or event
+        eprint(f"@ error: {msg}")
+        return
 
+    # step_start / step_finish and other bookkeeping events are silent.
+
+
+def stream_agent(
+    cmd: list[str],
+    *,
+    cwd: str | None,
+    label: str,
+    noun: str,
+    handle_event,
+    had_conversation: bool,
+) -> int:
+    """Shared backend lifecycle: spawn, stream JSON lines, spinner, ^C.
+
+    handle_event(event) renders each parsed event and is responsible for
+    saving the conversation ID eagerly when its backend reports one.
+    """
     try:
         proc = subprocess.Popen(
             cmd,
             stdin=agent_stdin(),
             stdout=subprocess.PIPE,
-            stderr=None,  # keep Codex diagnostics visible
+            stderr=None,  # keep backend diagnostics visible
             text=True,
             bufsize=1,
+            cwd=cwd,
         )
     except OSError as exc:
-        eprint(f"@: failed to start Codex: {exc}")
+        eprint(f"@: failed to start {label}: {exc}")
         return 1
-
-    seen_thread = thread_id
 
     global _active_spinner
     spinner = Spinner()
@@ -507,13 +540,7 @@ def run_codex(root: Path, prompt: str, state: dict) -> int:
                 oprint(line)
                 continue
 
-            if event.get("type") == "thread.started":
-                tid = event.get("thread_id")
-                if tid:
-                    seen_thread = tid
-                    set_conversation(root, state, "codex", tid)
-
-            render_codex_event(event)
+            handle_event(event)
 
         rc = proc.wait()
     except KeyboardInterrupt:
@@ -526,13 +553,42 @@ def run_codex(root: Path, prompt: str, state: dict) -> int:
 
     if interrupted:
         eprint("@: interrupted; conversation saved, ask again to continue")
-    elif rc != 0 and thread_id:
-        eprint("@: Codex resume failed.")
-        eprint("If the saved thread is stale, run: @ new")
-    elif rc == 0 and seen_thread:
-        set_conversation(root, state, "codex", seen_thread)
+    elif rc != 0 and had_conversation:
+        eprint(f"@: {label} resume failed.")
+        eprint(f"If the saved {noun} is stale, run: @ new")
 
     return rc
+
+
+def run_codex(root: Path, prompt: str, state: dict) -> int:
+    if shutil.which("codex") is None:
+        eprint("@: 'codex' was not found on PATH.")
+        eprint("Install/authenticate the OpenAI Codex CLI first, then retry.")
+        return 127
+
+    thread_id = get_conversation(state, "codex")
+
+    cmd = ["codex", "exec", "--json", "--color", "never", "-C", str(root)]
+    if thread_id:
+        cmd += ["resume", thread_id, prompt]
+    else:
+        cmd.append(prompt)
+
+    def handle(event: dict) -> None:
+        if event.get("type") == "thread.started":
+            tid = event.get("thread_id")
+            if tid:
+                set_conversation(root, state, "codex", tid)
+        render_codex_event(event)
+
+    return stream_agent(
+        cmd,
+        cwd=None,
+        label="Codex",
+        noun="thread",
+        handle_event=handle,
+        had_conversation=bool(thread_id),
+    )
 
 
 def run_claude(root: Path, prompt: str, state: dict) -> int:
@@ -543,85 +599,63 @@ def run_claude(root: Path, prompt: str, state: dict) -> int:
 
     session_id = get_conversation(state, "claude")
 
-    cmd = [
-        "claude",
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-    ]
-
+    cmd = ["claude", "-p", "--output-format", "stream-json", "--verbose"]
     if session_id:
         cmd += ["--resume", session_id]
-
     cmd.append(prompt)
 
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdin=agent_stdin(),
-            stdout=subprocess.PIPE,
-            stderr=None,  # keep Claude diagnostics visible
-            text=True,
-            bufsize=1,
-            cwd=str(root),
-        )
-    except OSError as exc:
-        eprint(f"@: failed to start Claude: {exc}")
-        return 1
-
-    seen_session = session_id
     bash_tool_ids: set[str] = set()
 
-    global _active_spinner
-    spinner = Spinner()
-    _active_spinner = spinner
-    spinner.start()
-    interrupted = False
+    def handle(event: dict) -> None:
+        if event.get("type") == "system" and event.get("subtype") == "init":
+            sid = event.get("session_id")
+            if sid:
+                set_conversation(root, state, "claude", sid)
+        render_claude_event(event, bash_tool_ids)
 
-    try:
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            line = line.strip()
-            if not line:
-                continue
-
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                # Be resilient to unexpected non-JSON output.
-                oprint(line)
-                continue
-
-            if event.get("type") == "system" and event.get("subtype") == "init":
-                sid = event.get("session_id")
-                if sid:
-                    seen_session = sid
-                    set_conversation(root, state, "claude", sid)
-
-            render_claude_event(event, bash_tool_ids)
-
-        rc = proc.wait()
-    except KeyboardInterrupt:
-        reap_child(proc)
-        rc = INTERRUPT_EXIT
-        interrupted = True
-    finally:
-        spinner.stop()
-        _active_spinner = None
-
-    if interrupted:
-        eprint("@: interrupted; conversation saved, ask again to continue")
-    elif rc != 0 and session_id:
-        eprint("@: Claude resume failed.")
-        eprint("If the saved session is stale, run: @ new")
-    elif rc == 0 and seen_session:
-        set_conversation(root, state, "claude", seen_session)
-
-    return rc
+    return stream_agent(
+        cmd,
+        cwd=str(root),
+        label="Claude",
+        noun="session",
+        handle_event=handle,
+        had_conversation=bool(session_id),
+    )
 
 
-RUNNERS = {"codex": run_codex, "claude": run_claude}
+def run_opencode(root: Path, prompt: str, state: dict) -> int:
+    if shutil.which("opencode") is None:
+        eprint("@: 'opencode' was not found on PATH.")
+        eprint("Install/authenticate the opencode CLI first, then retry.")
+        return 127
+
+    session_id = get_conversation(state, "opencode")
+
+    cmd = ["opencode", "run", "--format", "json", "--dir", str(root)]
+    if session_id:
+        cmd += ["--session", session_id]
+    cmd.append(prompt)
+
+    seen = {"id": session_id}
+
+    def handle(event: dict) -> None:
+        sid = event.get("sessionID")
+        if sid and sid != seen["id"]:
+            seen["id"] = sid
+            set_conversation(root, state, "opencode", sid)
+        render_opencode_event(event)
+
+    return stream_agent(
+        cmd,
+        cwd=str(root),
+        label="opencode",
+        noun="session",
+        handle_event=handle,
+        had_conversation=bool(session_id),
+    )
+
+
+RUNNERS = {"codex": run_codex, "claude": run_claude, "opencode": run_opencode}
 
 
 def main(argv: list[str]) -> int:
