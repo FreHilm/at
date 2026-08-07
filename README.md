@@ -1,3 +1,13 @@
+```
+             █████╗ ████████╗
+            ██╔══██╗╚══██╔══╝
+            ███████║   ██║
+            ██╔══██║   ██║
+            ██║  ██║   ██║
+            ╚═╝  ╚═╝   ╚═╝
+── A   S H E L L - N A T I V E   A I ──
+```
+
 # @ — your shell is the AI interface
 
 `@` turns AI coding agents into a shell command. No app to launch, no interactive mode to enter and leave — you stay in your terminal and talk to the agent the same way you run `git` or `pytest`:
