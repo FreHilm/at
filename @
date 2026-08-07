@@ -1,0 +1,582 @@
+#!/usr/bin/env python3
+"""
+@ — a tiny shell-native wrapper around AI coding agents (Codex CLI or Claude Code).
+
+Usage:
+  @ fix the failing tests
+  @ explain this stack trace
+  @ use claude
+  @ new
+  @ status
+  @ forget
+
+Behavior:
+  - One persistent conversation per backend per git repository (or current directory).
+  - Backend is chosen per project: @ use codex | @ use claude
+  - Normal shell commands remain normal shell commands.
+  - State is stored in:
+      ${XDG_STATE_HOME:-~/.local/state}/at-agent/
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+BACKENDS = ("codex", "claude")
+DEFAULT_BACKEND = "codex"
+
+# Each backend names its resumable conversation differently.
+CONV_KEYS = {"codex": "thread_id", "claude": "session_id"}
+
+
+class Spinner:
+    """Rolling-dot thinking indicator on a single terminal line.
+
+    Draws to /dev/tty when available, else to stderr if stderr is an
+    interactive TTY, else stays silent. Redirected/piped output never
+    receives spinner frames. All visible output during a run must go
+    through emit() so a frame is cleared before real text appears.
+    """
+
+    FRAMES = (".  ", ".. ", "...", " ..", "  .", "   ")
+    INTERVAL = 0.18
+
+    def __init__(self):
+        self._fh = None
+        self._owns_fh = False
+        try:
+            self._fh = open("/dev/tty", "w")
+            self._owns_fh = True
+        except OSError:
+            if sys.stderr.isatty():
+                self._fh = sys.stderr
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._drawn = False
+
+    @property
+    def enabled(self) -> bool:
+        return self._fh is not None
+
+    def start(self) -> None:
+        if not self.enabled or self._thread is not None:
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        i = 0
+        while not self._stop_event.wait(self.INTERVAL):
+            with self._lock:
+                try:
+                    self._fh.write("\r" + self.FRAMES[i % len(self.FRAMES)])
+                    self._fh.flush()
+                except OSError:
+                    return
+                self._drawn = True
+            i += 1
+
+    def _clear_locked(self) -> None:
+        if self._drawn:
+            try:
+                self._fh.write("\r   \r")
+                self._fh.flush()
+            except OSError:
+                pass
+            self._drawn = False
+
+    def emit(self, stream, *args, **kwargs) -> None:
+        with self._lock:
+            self._clear_locked()
+            print(*args, file=stream, flush=True, **kwargs)
+
+    def stop(self) -> None:
+        if not self.enabled:
+            return
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+            self._thread = None
+        with self._lock:
+            self._clear_locked()
+        if self._owns_fh:
+            try:
+                self._fh.close()
+            except OSError:
+                pass
+            self._fh = None
+
+
+_active_spinner: Spinner | None = None
+
+
+def oprint(*args, **kwargs):
+    spinner = _active_spinner
+    if spinner is not None and spinner.enabled:
+        spinner.emit(sys.stdout, *args, **kwargs)
+    else:
+        print(*args, flush=True, **kwargs)
+
+
+def eprint(*args, **kwargs):
+    spinner = _active_spinner
+    if spinner is not None and spinner.enabled:
+        spinner.emit(sys.stderr, *args, **kwargs)
+    else:
+        print(*args, file=sys.stderr, **kwargs)
+
+
+def repo_root() -> Path:
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        if out:
+            return Path(out).resolve()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    return Path.cwd().resolve()
+
+
+def state_dir() -> Path:
+    base = os.environ.get("XDG_STATE_HOME")
+    if base:
+        root = Path(base)
+    else:
+        root = Path.home() / ".local" / "state"
+    path = root / "at-agent"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def state_file(root: Path) -> Path:
+    digest = hashlib.sha256(str(root).encode()).hexdigest()[:20]
+    return state_dir() / f"{digest}.json"
+
+
+def load_state(root: Path) -> dict:
+    path = state_file(root)
+    if not path.exists():
+        return {}
+    try:
+        state = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(state, dict):
+        return {}
+    # Migrate legacy format: a top-level thread_id was a Codex conversation.
+    legacy_thread = state.pop("thread_id", None)
+    if legacy_thread and not state.get("codex"):
+        state["codex"] = {"thread_id": legacy_thread}
+    return state
+
+
+def save_state(root: Path, state: dict) -> None:
+    state = {k: v for k, v in state.items() if v}
+    state["root"] = str(root)
+    state_file(root).write_text(json.dumps(state, indent=2) + "\n")
+
+
+def resolve_backend(state: dict) -> str:
+    backend = state.get("backend") or os.environ.get("AT_AGENT_BACKEND", "")
+    backend = backend.strip().lower()
+    return backend if backend in BACKENDS else DEFAULT_BACKEND
+
+
+def get_conversation(state: dict, backend: str) -> str | None:
+    sub = state.get(backend)
+    if isinstance(sub, dict):
+        return sub.get(CONV_KEYS[backend])
+    return None
+
+
+def set_conversation(root: Path, state: dict, backend: str, conv_id: str) -> None:
+    state[backend] = {CONV_KEYS[backend]: conv_id}
+    save_state(root, state)
+
+
+def forget_conversation(root: Path, state: dict, backend: str) -> None:
+    state.pop(backend, None)
+    others = any(state.get(b) for b in BACKENDS)
+    if not others and not state.get("backend"):
+        try:
+            state_file(root).unlink()
+        except FileNotFoundError:
+            pass
+    else:
+        save_state(root, state)
+
+
+def print_help() -> None:
+    print(
+        """@ — shell-native AI agent (Codex or Claude Code)
+
+Usage:
+  @ <instruction>       Ask the agent to work in the current repo/directory
+  @ use codex|claude    Choose the backend for this repo
+  @ new                 Start a fresh conversation for this repo
+  @ forget              Forget the saved conversation for this repo
+  @ status              Show the repo, backend, and saved conversations
+  @ spinner-test        Test the thinking animation without invoking a backend
+  @ help                Show this help
+
+Examples:
+  @ inspect this repo and find the auth bug
+  git diff
+  pytest
+  @ keep the existing API and fix it another way
+
+Backend:
+  Per-repo via '@ use ...', else $AT_AGENT_BACKEND, else codex.
+
+State:
+  ~/.local/state/at-agent/   (or $XDG_STATE_HOME/at-agent)
+
+Requires:
+  python3
+  codex and/or claude
+"""
+    )
+
+
+def render_codex_event(event: dict) -> None:
+    etype = event.get("type")
+
+    if etype == "item.completed":
+        item = event.get("item") or {}
+        kind = item.get("type")
+
+        if kind == "agent_message":
+            text = item.get("text")
+            if text:
+                oprint(text)
+            return
+
+        if kind == "command_execution":
+            cmd = item.get("command")
+            output = item.get("aggregated_output")
+            exit_code = item.get("exit_code")
+            if cmd:
+                eprint(f"  $ {cmd}")
+            if output:
+                eprint(output.rstrip())
+            if exit_code not in (None, 0):
+                eprint(f"  [exit {exit_code}]")
+            return
+
+        # Show useful tool-style items without dumping raw JSON.
+        text = item.get("text") or item.get("aggregated_output")
+        if text:
+            oprint(text)
+
+    elif etype in ("turn.failed", "error"):
+        msg = event.get("message") or event.get("error") or event
+        eprint(f"@ error: {msg}")
+
+
+def tool_result_text(block: dict) -> str:
+    content = block.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                parts.append(part.get("text", ""))
+        return "\n".join(parts)
+    return ""
+
+
+def render_claude_event(event: dict, bash_tool_ids: set[str]) -> None:
+    etype = event.get("type")
+
+    if etype == "assistant":
+        message = event.get("message") or {}
+        for block in message.get("content") or []:
+            if not isinstance(block, dict):
+                continue
+            kind = block.get("type")
+            if kind == "text":
+                text = block.get("text")
+                if text:
+                    oprint(text)
+            elif kind == "tool_use":
+                name = block.get("name") or "tool"
+                tool_input = block.get("input") or {}
+                if name == "Bash" and tool_input.get("command"):
+                    if block.get("id"):
+                        bash_tool_ids.add(block["id"])
+                    eprint(f"  $ {tool_input['command']}")
+                else:
+                    target = (
+                        tool_input.get("file_path")
+                        or tool_input.get("path")
+                        or tool_input.get("pattern")
+                        or ""
+                    )
+                    eprint(f"  [{name} {target}]".rstrip() if target else f"  [{name}]")
+        return
+
+    if etype == "user":
+        message = event.get("message") or {}
+        content = message.get("content")
+        if not isinstance(content, list):
+            return
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                # Only echo shell command output; other tool results
+                # (file reads, searches) would flood the terminal.
+                if block.get("tool_use_id") in bash_tool_ids:
+                    text = tool_result_text(block)
+                    if text.strip():
+                        eprint(text.rstrip())
+                if block.get("is_error"):
+                    eprint("  [tool error]")
+        return
+
+    if etype == "result":
+        # Assistant text was already streamed; only surface failures.
+        if event.get("is_error"):
+            msg = event.get("result") or event.get("subtype") or "unknown error"
+            eprint(f"@ error: {msg}")
+        return
+
+    # Other event types (system/init handled by the caller, thinking_tokens,
+    # rate_limit_event, stream noise) are intentionally silent.
+
+
+def run_codex(root: Path, prompt: str, state: dict) -> int:
+    if shutil.which("codex") is None:
+        eprint("@: 'codex' was not found on PATH.")
+        eprint("Install/authenticate the OpenAI Codex CLI first, then retry.")
+        return 127
+
+    thread_id = get_conversation(state, "codex")
+
+    base = [
+        "codex",
+        "exec",
+        "--json",
+        "--color",
+        "never",
+        "-C",
+        str(root),
+    ]
+
+    if thread_id:
+        cmd = base + ["resume", thread_id, prompt]
+    else:
+        cmd = base + [prompt]
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=None,  # keep Codex diagnostics visible
+            text=True,
+            bufsize=1,
+        )
+    except OSError as exc:
+        eprint(f"@: failed to start Codex: {exc}")
+        return 1
+
+    seen_thread = thread_id
+
+    global _active_spinner
+    spinner = Spinner()
+    _active_spinner = spinner
+    spinner.start()
+
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                # Be resilient to unexpected non-JSON output.
+                oprint(line)
+                continue
+
+            if event.get("type") == "thread.started":
+                tid = event.get("thread_id")
+                if tid:
+                    seen_thread = tid
+                    set_conversation(root, state, "codex", tid)
+
+            render_codex_event(event)
+
+        rc = proc.wait()
+    finally:
+        spinner.stop()
+        _active_spinner = None
+
+    if rc != 0 and thread_id:
+        eprint("@: Codex resume failed.")
+        eprint("If the saved thread is stale, run: @ new")
+    elif rc == 0 and seen_thread:
+        set_conversation(root, state, "codex", seen_thread)
+
+    return rc
+
+
+def run_claude(root: Path, prompt: str, state: dict) -> int:
+    if shutil.which("claude") is None:
+        eprint("@: 'claude' was not found on PATH.")
+        eprint("Install/authenticate the Claude Code CLI first, then retry.")
+        return 127
+
+    session_id = get_conversation(state, "claude")
+
+    cmd = [
+        "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+    ]
+
+    if session_id:
+        cmd += ["--resume", session_id]
+
+    cmd.append(prompt)
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=None,  # keep Claude diagnostics visible
+            text=True,
+            bufsize=1,
+            cwd=str(root),
+        )
+    except OSError as exc:
+        eprint(f"@: failed to start Claude: {exc}")
+        return 1
+
+    seen_session = session_id
+    bash_tool_ids: set[str] = set()
+
+    global _active_spinner
+    spinner = Spinner()
+    _active_spinner = spinner
+    spinner.start()
+
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                # Be resilient to unexpected non-JSON output.
+                oprint(line)
+                continue
+
+            if event.get("type") == "system" and event.get("subtype") == "init":
+                sid = event.get("session_id")
+                if sid:
+                    seen_session = sid
+                    set_conversation(root, state, "claude", sid)
+
+            render_claude_event(event, bash_tool_ids)
+
+        rc = proc.wait()
+    finally:
+        spinner.stop()
+        _active_spinner = None
+
+    if rc != 0 and session_id:
+        eprint("@: Claude resume failed.")
+        eprint("If the saved session is stale, run: @ new")
+    elif rc == 0 and seen_session:
+        set_conversation(root, state, "claude", seen_session)
+
+    return rc
+
+
+RUNNERS = {"codex": run_codex, "claude": run_claude}
+
+
+def main(argv: list[str]) -> int:
+    root = repo_root()
+
+    if len(argv) < 2:
+        print_help()
+        return 0
+
+    command = argv[1].lower()
+
+    if command in ("help", "--help", "-h"):
+        print_help()
+        return 0
+
+    state = load_state(root)
+    backend = resolve_backend(state)
+
+    if command == "status":
+        print(f"root:    {root}")
+        print(f"backend: {backend}")
+        for b in BACKENDS:
+            conv = get_conversation(state, b) or "(new conversation)"
+            marker = "*" if b == backend else " "
+            print(f"{marker} {b}:  {conv}")
+        print(f"state:   {state_file(root)}")
+        return 0
+
+    if command == "use":
+        choice = argv[2].lower() if len(argv) > 2 else ""
+        if choice not in BACKENDS:
+            eprint(f"@: usage: @ use {'|'.join(BACKENDS)}")
+            return 2
+        state["backend"] = choice
+        save_state(root, state)
+        print(f"@ backend for {root}: {choice}")
+        return 0
+
+    if command == "spinner-test":
+        spinner = Spinner()
+        spinner.start()
+        try:
+            time.sleep(3)
+        finally:
+            spinner.stop()
+        print("spinner test complete")
+        return 0
+
+    if command in ("new", "forget", "reset"):
+        forget_conversation(root, state, backend)
+        if command == "new":
+            print(f"@ new {backend} conversation for {root}")
+        else:
+            print(f"@ forgot {backend} conversation for {root}")
+        return 0
+
+    prompt = " ".join(argv[1:]).strip()
+    if not prompt:
+        print_help()
+        return 0
+
+    return RUNNERS[backend](root, prompt, state)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

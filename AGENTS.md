@@ -1,0 +1,321 @@
+# AGENTS.md
+
+## Project overview
+
+This repository contains `@`, a tiny shell-native wrapper around AI coding agent CLIs. It supports two backends: the OpenAI Codex CLI and Anthropic's Claude Code CLI, selected per project.
+
+The goal is to make an AI coding agent feel like a native shell primitive rather than a separate interactive application.
+
+Typical usage:
+
+```sh
+git status
+pytest
+
+@ inspect this repository and find the auth bug
+
+git diff
+
+@ keep the existing API and fix it another way
+```
+
+The user should be able to freely interleave ordinary shell commands and agent calls. Every invocation of `@` returns control directly to the user's existing shell.
+
+## Core UX principles
+
+1. `@` must behave like a normal executable.
+2. Do not replace or emulate the user's shell.
+3. Do not require entering or exiting an interactive agent session.
+4. Preserve conversation context between `@` invocations within the same project.
+5. Keep terminal output minimal, clean, and shell-like.
+6. Prefer invisible implementation details over extra UI.
+7. The command should feel fast and lightweight even when the underlying agent takes time.
+8. Avoid surprising changes to the user's shell configuration.
+
+## Command location
+
+Recommended installation path:
+
+```text
+~/.local/bin/@
+```
+
+The implementation should remain usable from zsh, bash, fish, and other shells as long as that directory is on `PATH`.
+
+Avoid implementing the main behavior as a zsh-only alias or shell function unless a shell-specific feature explicitly requires it.
+
+## State
+
+Persistent state is stored under:
+
+```text
+${XDG_STATE_HOME:-~/.local/state}/at-agent/
+```
+
+Conversation state is scoped per project.
+
+Project identity should use:
+
+1. the Git repository root when inside a Git repository;
+2. otherwise, the resolved current working directory.
+
+The wrapper stores each backend's conversation ID (Codex thread ID, Claude session ID) and resumes it on the next invocation from the same project.
+
+State file schema:
+
+```json
+{
+  "root": "/path/to/project",
+  "backend": "claude",
+  "codex":  {"thread_id": "..."},
+  "claude": {"session_id": "..."}
+}
+```
+
+Legacy state files with a top-level `thread_id` are migrated on load: the value is treated as `codex.thread_id`. Switching backends must not discard the other backend's saved conversation.
+
+`@ new` and `@ forget` reset only the active backend's conversation.
+
+Commands:
+
+```text
+@ status             Show project root, backend, conversation IDs, and state file
+@ use codex|claude   Choose the backend for the current project
+@ new                Start a fresh conversation for the current project
+@ forget             Forget the current project's saved conversation
+@ spinner-test       Test the thinking animation without invoking the backend
+@ help               Show usage
+```
+
+## Backend selection
+
+Resolution order:
+
+1. `backend` in the project state file (set via `@ use ...`);
+2. the `AT_AGENT_BACKEND` environment variable;
+3. default: `codex`.
+
+## Codex integration
+
+The wrapper invokes the Codex CLI in non-interactive exec mode and consumes JSON event output.
+
+Conceptually:
+
+```text
+codex exec --json ... <prompt>
+```
+
+For an existing project conversation it resumes the saved thread/session.
+
+Do not parse human-oriented terminal output when structured JSON events are available.
+
+Save a newly reported thread ID as soon as it is received so that subsequent `@` calls can resume the conversation.
+
+If a saved thread can no longer be resumed, provide a concise error and tell the user that `@ new` starts a fresh conversation.
+
+## Claude Code integration
+
+The wrapper invokes the Claude Code CLI in non-interactive mode with structured JSON output:
+
+```text
+claude -p --output-format stream-json --verbose <prompt>
+```
+
+For an existing project conversation it appends `--resume <session-id>`. Claude uses the process working directory as its workspace, so the wrapper runs it with the project root as the subprocess `cwd`.
+
+Relevant stream events:
+
+- `{"type": "system", "subtype": "init", "session_id": ...}` — first event; save the session ID immediately.
+- `{"type": "assistant", "message": {"content": [...]}}` — content blocks: `text` (print to stdout), `tool_use` (render Bash commands as `  $ <command>` on stderr, other tools as a compact `[Name target]` note), `thinking` (ignore).
+- `{"type": "user", "message": {"content": [...]}}` — `tool_result` blocks; `content` may be a plain string or a list of text blocks. Echo only results of Bash `tool_use` blocks (matched by `tool_use_id`) to stderr; other tool results (file reads, searches) would flood the terminal.
+- `{"type": "result", "is_error": ..., "result": ...}` — final event. Do not reprint `result` text (assistant text was already streamed); surface errors only.
+- Noise events (`system/thinking_tokens`, `rate_limit_event`, etc.) must be silently ignored.
+
+If a saved session can no longer be resumed, Claude exits non-zero; provide the same concise `@ new` hint as for Codex.
+
+Do not pass permission-widening flags (e.g. `--dangerously-skip-permissions`) by default.
+
+## Thinking indicator
+
+While the backend agent is working and there is no user-visible output, display a small rolling-dot animation:
+
+```text
+.  
+.. 
+...
+ ..
+  .
+
+```
+
+The frames repeat continuously.
+
+Target interval is approximately 180 ms per frame.
+
+Important behavior:
+
+- Render the animation on one terminal line.
+- Do not print a newline for each frame.
+- Clear the animation before printing agent text, command execution output, errors, or other visible information.
+- Resume the animation if the agent continues working after visible output.
+- Internal JSON events that produce no visible output must NOT stop or restart the animation.
+- Do not let spinner frames remain in shell scrollback.
+- Prefer writing directly to the controlling terminal (`/dev/tty`) when available.
+- Fall back to stderr only when stderr is an interactive TTY.
+- If no interactive terminal is available, silently disable the animation.
+- Never emit spinner escape sequences into redirected or piped output.
+
+`@ spinner-test` should animate for roughly three seconds and then print:
+
+```text
+spinner test complete
+```
+
+Use this command to debug terminal rendering independently of the backends.
+
+## Output behavior
+
+Agent messages should be printed plainly, without large banners or decorative framing.
+
+When useful, shell commands executed by the agent may be shown in a compact form such as:
+
+```text
+  $ pytest
+```
+
+Command output may follow directly beneath it.
+
+Avoid dumping raw JSON events unless explicitly running in a debug mode.
+
+Errors emitted by the wrapper should use a short prefix:
+
+```text
+@: <message>
+```
+
+## Implementation constraints
+
+The current implementation is a single Python 3 executable named `@`.
+
+Keep dependencies limited to the Python standard library unless adding a dependency provides a substantial benefit.
+
+Expected external commands:
+
+- `codex` and/or `claude` (only the active backend needs to be installed)
+- `git` (optional; behavior must still work outside Git repositories)
+
+The wrapper should tolerate:
+
+- repositories with spaces in their paths;
+- execution outside a Git repository;
+- redirected stdout;
+- redirected stderr;
+- terminals where stderr itself is not reported as a TTY;
+- stale or malformed local state files;
+- unexpected non-JSON lines from Codex.
+
+Use argument arrays with `subprocess`; do not construct shell command strings.
+
+## Concurrency and cleanup
+
+Spinner/background rendering must never prevent the process from exiting.
+
+Background threads should be daemonized or reliably joined.
+
+Always clear the spinner in `finally`-style cleanup paths, including failures and interrupts where practical.
+
+Avoid races where the spinner writes over agent output.
+
+If output rendering becomes more complex, centralize terminal writes rather than adding independent writers.
+
+## Security
+
+Do not silently increase Codex permissions or sandbox access.
+
+Do not add flags that bypass approvals, sandboxing, or safety controls merely to make the wrapper more convenient.
+
+Do not log prompts, command output, secrets, or repository content into the state directory.
+
+Persist only the minimum information required to resume a conversation.
+
+## Compatibility
+
+Primary targets:
+
+- macOS
+- Linux
+
+The `/dev/tty` implementation is Unix-oriented. If Windows support is added, isolate platform-specific terminal behavior cleanly rather than complicating the main event loop.
+
+## Development style
+
+Prefer small, readable functions.
+
+Keep the project small enough that a user can inspect and understand the entire wrapper.
+
+When fixing behavior, address the underlying event/TTY lifecycle rather than adding arbitrary sleeps.
+
+Do not add elaborate abstractions unless they make terminal concurrency or Codex event handling materially safer.
+
+## Testing changes
+
+At minimum, manually verify:
+
+```sh
+@ help
+@ status
+@ spinner-test
+@ say hello
+@ say something that follows from my previous request
+@ new
+```
+
+Backend switching:
+
+```sh
+@ use claude
+@ status                 # backend: claude, Codex conversation still listed
+@ say hello
+@ say something that follows from my previous request
+@ use codex
+@ status                 # old Codex thread still saved
+```
+
+Also verify legacy state migration: a state file containing only `{"root": ..., "thread_id": ...}` must surface the thread as the Codex conversation without data loss.
+
+Also verify:
+
+```sh
+@ spinner-test > /tmp/out
+```
+
+The spinner should remain on the terminal when appropriate and must not contaminate `/tmp/out`.
+
+Test inside and outside a Git repository.
+
+For changes to the event loop, test an agent request that:
+
+1. takes several seconds before responding;
+2. runs at least one shell command;
+3. prints a final response.
+
+Confirm that the spinner is visible while idle, disappears cleanly for real output, and does not flicker on invisible Codex events.
+
+## Product direction
+
+The long-term idea is that `@` should feel as natural as any other shell command:
+
+```sh
+@ fix this
+```
+
+not:
+
+```sh
+launch-agent
+enter-agent-mode
+type-prompt
+exit-agent-mode
+```
+
+When choosing between technically powerful behavior and a seamless shell experience, prefer the seamless shell experience unless doing so would compromise safety or correctness.
