@@ -119,4 +119,4 @@ State lives in `${XDG_STATE_HOME:-~/.local/state}/at-agent/` — one small JSON 
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Spinner animations come from [cli-spinners](https://github.com/sindresorhus/cli-spinners); see [ATTRIBUTIONS.md](ATTRIBUTIONS.md).
+MIT — see [LICENSE](LICENSE). [ATTRIBUTIONS.md](ATTRIBUTIONS.md).
