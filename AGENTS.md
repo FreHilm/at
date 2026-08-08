@@ -98,6 +98,8 @@ Commands:
 @ --spinner-test [x]   Test the thinking animation without invoking the backend
 @ --version            Show the installed version
 @ --update             Replace the installed @ with the latest from the repo
+@ --completion <sh>    Print a completion script for zsh or bash
+@ --saved-names        Hidden helper: saved conversation names, one per line
 @ --help               Show usage
 ```
 
@@ -131,6 +133,17 @@ Piped input:
 ```
 
 This makes `git diff | @ "review this change"` deterministic on every backend. When stdin is not a TTY the backend subprocess receives `stdin=DEVNULL` (the wrapper already consumed the pipe); an interactive terminal stdin is inherited unchanged so backends behave exactly as if run directly. Oversized input is truncated with a visible warning; undecodable bytes are replaced, never fatal. Piped stdin with no instruction argument still just prints help.
+
+## Shell completion
+
+`@ --completion zsh|bash` prints a completion script for the user to
+`eval` from their shell config; the wrapper never installs completion
+itself. The script is generated from the real command/backend/spinner
+lists in the source so it cannot drift from them. Saved conversation
+names are resolved at completion time through the hidden
+`@ --saved-names` command, which prints one name per line and nothing
+else — completion depends on that format staying stable. The zsh script
+registers for `@` and the argv[0] aliases.
 
 ## Backend selection
 

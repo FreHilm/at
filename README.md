@@ -90,8 +90,21 @@ Requirements: `python3`, macOS or Linux. `git` is optional — it's used to find
 @ --spinner-test [x]  Test the thinking animation
 @ --version           Show the installed version
 @ --update            Update @ to the latest version
+@ --completion <sh>   Print completion script for zsh or bash
 @ --help              Show help
 ```
+
+### Tab completion
+
+```sh
+# zsh (~/.zshrc)
+eval "$(@ --completion zsh)"
+
+# bash (~/.bashrc)
+eval "$(@ --completion bash)"
+```
+
+Completes the commands, backend names, spinner styles — and your saved conversation names for `--switch` and `--forget`.
 
 ### Choosing a backend
 
