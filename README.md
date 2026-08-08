@@ -142,7 +142,7 @@ ln -s ~/.local/bin/@ ~/.local/bin/@c
 
 ## What output looks like
 
-Agent replies print plainly to stdout — no banners, no framing. While the agent thinks, a small spinner runs on the terminal (and never leaks into redirected or piped output). Each run it picks a random style and color, gently pulsing — pin a color with `@ --color teal`, go back with `@ --color random`, and preview with `@ --spinner-test`. It respects `NO_COLOR`. Commands the agent executes are echoed compactly to stderr with their output beneath:
+Agent replies print plainly to stdout — no banners, no framing. While the agent thinks, a small spinner runs on the terminal (and never leaks into redirected or piped output), typing out a mood word beside it — `⠋ Pondering` — which it backspaces away and replaces every few seconds. Each run picks a random style and color, gently pulsing — pin a color with `@ --color teal`, go back with `@ --color random`, and preview with `@ --spinner-test`. It respects `NO_COLOR`. Commands the agent executes are echoed compactly to stderr with their output beneath:
 
 ```text
   $ pytest

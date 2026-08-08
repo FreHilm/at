@@ -37,7 +37,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.1.4"
+VERSION = "0.1.5"
 UPDATE_URL = "https://raw.githubusercontent.com/FreHilm/at/main/@"
 
 BACKENDS = ("codex", "claude", "opencode")
@@ -99,6 +99,18 @@ SPINNER_STYLES = {
 }
 DEFAULT_SPINNER = "dots"
 
+# Status words shown beside the spinner while the agent works, in the
+# spirit of Claude Code's "Pondering". Typed and deleted letter by
+# letter; each fully typed word holds for 7-15 s before the next.
+LOADING_WORDS = (
+    "Pondering", "Scheming", "Brewing", "Conjuring", "Percolating",
+    "Marinating", "Noodling", "Tinkering", "Ruminating", "Cogitating",
+    "Daydreaming", "Hatching", "Simmering", "Whirring", "Crunching",
+    "Untangling", "Spelunking", "Wrangling", "Summoning", "Incubating",
+    "Riffing", "Musing", "Grokking", "Puzzling", "Distilling",
+    "Weaving", "Excavating", "Composing", "Sleuthing", "Vibing",
+)
+
 # Spinner base colors (RGB). One is picked at random per run unless the
 # user pins one with '@ --color <name>' (stored in ~/.at/config.json).
 SPINNER_COLORS = {
@@ -113,6 +125,68 @@ SPINNER_COLORS = {
     "magenta": (220, 90, 220),
     "pink": (240, 130, 180),
 }
+
+
+class WordTicker:
+    """Types, holds and deletes loading words with a human rhythm.
+
+    Fast, machine-confident keystrokes (8-30 ms) with rare micro
+    hesitations for texture; deletion starts quick and accelerates
+    like a held backspace key. A fully typed word holds for 7-15 s,
+    so the word changes on that cadence. Driven by the spinner's frame
+    ticks: text(now) advances whatever actions are due and returns the
+    currently visible part.
+    """
+
+    TYPE_DELAY = (0.002, 0.007)
+    HESITATE = 0.05            # chance of a micro pause after a keystroke
+    HESITATE_DELAY = (0.03, 0.08)
+    HOLD = (7.0, 15.0)
+    DELETE_START = 0.05        # first backspace delay...
+    DELETE_ACCEL = 0.70        # ...then each one this much faster,
+    DELETE_MIN = 0.012         # down to this floor
+    GAP = (0.25, 0.7)          # blank pause before the next word
+
+    def __init__(self):
+        self._word = random.choice(LOADING_WORDS)
+        self._shown = 0
+        self._state = "typing"
+        self._delete_delay = self.DELETE_START
+        self._next = time.monotonic() + random.uniform(*self.TYPE_DELAY)
+
+    def _advance(self, now: float) -> None:
+        if self._state == "typing":
+            self._shown += 1
+            if self._shown == len(self._word):
+                self._state = "holding"
+                self._next = now + random.uniform(*self.HOLD)
+                return
+            self._next = now + random.uniform(*self.TYPE_DELAY)
+            if random.random() < self.HESITATE:
+                self._next += random.uniform(*self.HESITATE_DELAY)
+        elif self._state == "holding":
+            self._state = "deleting"
+            self._delete_delay = self.DELETE_START
+            self._next = now + self._delete_delay
+        elif self._state == "deleting":
+            self._shown -= 1
+            if self._shown == 0:
+                self._state = "gap"
+                self._next = now + random.uniform(*self.GAP)
+                return
+            self._delete_delay = max(self.DELETE_MIN, self._delete_delay * self.DELETE_ACCEL)
+            self._next = now + self._delete_delay
+        else:  # gap
+            others = [w for w in LOADING_WORDS if w != self._word]
+            self._word = random.choice(others or LOADING_WORDS)
+            self._shown = 0
+            self._state = "typing"
+            self._next = now + random.uniform(*self.TYPE_DELAY)
+
+    def text(self, now: float) -> str:
+        while now >= self._next:
+            self._advance(now)
+        return self._word[: self._shown]
 
 
 class Spinner:
@@ -148,7 +222,8 @@ class Spinner:
         self.color = color
         self._prefixes = self._breath_prefixes()
         self._interval, self._frames = SPINNER_STYLES[style]
-        self._blank = " " * max(len(f) for f in self._frames)
+        self._words = WordTicker()
+        self._last_len = 0  # visible chars of the last drawn line
         self._fh = None
         self._owns_fh = False
         try:
@@ -204,21 +279,29 @@ class Spinner:
         while not self._stop_event.wait(self._interval):
             with self._lock:
                 frame = self._frames[i % len(self._frames)]
+                word = self._words.text(time.monotonic())
+                # The separator space is part of the layout, never deleted.
+                line = f"{frame} {word}"
+                # Pad over leftovers when the line shrinks (word deleting).
+                pad = " " * max(0, self._last_len - len(line))
                 if self._prefixes:
                     prefix = self._prefixes[i % len(self._prefixes)]
-                    frame = prefix + frame + self.RESET
+                    out = prefix + line + self.RESET
+                else:
+                    out = line
                 try:
-                    self._fh.write("\r" + frame)
+                    self._fh.write("\r" + out + pad)
                     self._fh.flush()
                 except (OSError, ValueError):
                     return
+                self._last_len = len(line)
                 self._drawn = True
             i += 1
 
     def _clear_locked(self) -> None:
         if self._drawn:
             try:
-                self._fh.write("\r" + self._blank + "\r")
+                self._fh.write("\r" + " " * self._last_len + "\r")
                 self._fh.flush()
             except (OSError, ValueError):
                 pass

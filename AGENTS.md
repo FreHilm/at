@@ -244,6 +244,28 @@ Style selection:
 
 The frames repeat continuously.
 
+Loading words:
+
+- A status word (from the `LOADING_WORDS` list in `@`, e.g. "Pondering",
+  "Brewing") is shown after the spinner character, separated by one
+  space. The separator space is part of the fixed layout: it is always
+  rendered, even while the word is empty — only word letters are ever
+  typed and deleted.
+- The word is typed one letter at a time, fast and machine-confident
+  (8-30 ms per keystroke with rare micro hesitations for texture; a
+  word lands in ~0.2 s), held fully typed for 7-15 s,
+  then deleted one letter at a time with accelerating backspace rhythm
+  (~50 ms down to ~12 ms per character — a whole word vanishes in
+  ~0.2 s), a short blank gap (0.25-0.7 s), and a new word begins.
+  Never the same word twice in a row. The pace should read as a
+  powerful agent at work, not a human typist.
+- The word shares the spinner's color and breathing.
+- When the line shrinks (deletion), leftover characters must be padded
+  over; clearing must erase the full drawn width, not just the spinner
+  character.
+- Word state continues across clear/redraw cycles caused by real output;
+  it does not restart on every event.
+
 Color:
 
 - The spinner is colored, and the color "breathes": brightness pulses
