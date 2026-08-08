@@ -220,7 +220,12 @@ def load_state(root: Path) -> dict:
 def save_state(root: Path, state: dict) -> None:
     state = {k: v for k, v in state.items() if v}
     state["root"] = str(root)
-    state_file(root).write_text(json.dumps(state, indent=2) + "\n")
+    # Write-then-rename so concurrent @ calls in the same repo never
+    # interleave partial writes; the pid keeps temp names distinct.
+    path = state_file(root)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(state, indent=2) + "\n")
+    os.replace(tmp, path)
 
 
 def resolve_backend(state: dict) -> str:
@@ -713,11 +718,20 @@ def main(argv: list[str]) -> int:
             return 2
         print(f"root:    {root}")
         print(f"backend: {backend}")
-        for b in BACKENDS:
-            conv = get_conversation(state, b) or "(new conversation)"
-            marker = "*" if b == backend else " "
-            print(f"{marker} {b}:  {conv}")
         saved = state.get("saved") or {}
+        for b in BACKENDS:
+            conv_id = get_conversation(state, b)
+            conv = conv_id or "(new conversation)"
+            names = [
+                name
+                for name in sorted(saved)
+                if isinstance(saved[name], dict)
+                and saved[name].get("backend") == b
+                and saved[name].get("id") == conv_id
+            ]
+            note = f"  (= {', '.join(names)})" if conv_id and names else ""
+            marker = "*" if b == backend else " "
+            print(f"{marker} {b}:  {conv}{note}")
         if saved:
             print(f"saved:   {len(saved)} conversation(s), see: @ --list")
         print(f"state:   {state_file(root)}")
