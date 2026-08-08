@@ -87,7 +87,8 @@ Requirements: `python3`, macOS or Linux. `git` is optional — it's used to find
 @ --list              List named conversations for this repo
 @ --forget [name]     Forget the current conversation (or a named one)
 @ --status            Show the repo, backend, and saved conversations
-@ --spinner-test [x]  Test the thinking animation
+@ --color [name]      Show or set the spinner color (or 'random')
+@ --spinner-test [x] [color]  Test the thinking animation
 @ --version           Show the installed version
 @ --update            Update @ to the latest version
 @ --completion <sh>   Print completion script for zsh or bash
@@ -141,7 +142,7 @@ ln -s ~/.local/bin/@ ~/.local/bin/@c
 
 ## What output looks like
 
-Agent replies print plainly to stdout — no banners, no framing. While the agent thinks, a small spinner runs on the terminal (and never leaks into redirected or piped output). Commands the agent executes are echoed compactly to stderr with their output beneath:
+Agent replies print plainly to stdout — no banners, no framing. While the agent thinks, a small spinner runs on the terminal (and never leaks into redirected or piped output). Each run it picks a random style and color, gently pulsing — pin a color with `@ --color teal`, go back with `@ --color random`, and preview with `@ --spinner-test`. It respects `NO_COLOR`. Commands the agent executes are echoed compactly to stderr with their output beneath:
 
 ```text
   $ pytest

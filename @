@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -36,7 +37,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 UPDATE_URL = "https://raw.githubusercontent.com/FreHilm/at/main/@"
 
 BACKENDS = ("codex", "claude", "opencode")
@@ -62,6 +63,7 @@ COMPLETION_COMMANDS = (
     ("--list", "list named conversations"),
     ("--forget", "forget the current or a named conversation"),
     ("--status", "show repo, backend and conversations"),
+    ("--color", "show or set the spinner color"),
     ("--spinner-test", "test the thinking animation"),
     ("--version", "show the installed version"),
     ("--update", "update @ from GitHub"),
@@ -97,24 +99,54 @@ SPINNER_STYLES = {
 }
 DEFAULT_SPINNER = "dots"
 
+# Spinner base colors (RGB). One is picked at random per run unless the
+# user pins one with '@ --color <name>' (stored in ~/.at/config.json).
+SPINNER_COLORS = {
+    "red": (235, 80, 60),
+    "orange": (240, 140, 40),
+    "yellow": (230, 200, 50),
+    "green": (80, 200, 120),
+    "teal": (60, 200, 180),
+    "cyan": (80, 200, 240),
+    "blue": (90, 140, 240),
+    "purple": (150, 110, 240),
+    "magenta": (220, 90, 220),
+    "pink": (240, 130, 180),
+}
+
 
 class Spinner:
     """Thinking indicator on a single terminal line.
 
-    Each run randomly picks one of the cli-spinners "dots" styles;
-    an explicitly requested but unknown style falls back to "dots".
+    Each run randomly picks one of the cli-spinners "dots" styles and a
+    base color, which "breathes" (brightness pulses) while it spins. The
+    user can pin the color via '@ --color <name>'. An explicitly
+    requested but unknown style falls back to "dots"; an unknown color
+    to a random one. Color is skipped when NO_COLOR is set or TERM is
+    dumb/absent; truecolor is used when COLORTERM advertises it, with a
+    256-color fallback otherwise.
     Draws to /dev/tty when available, else to stderr if stderr is an
     interactive TTY, else stays silent. Redirected/piped output never
     receives spinner frames. All visible output during a run must go
     through emit() so a frame is cleared before real text appears.
     """
 
-    def __init__(self, style: str | None = None):
+    BREATH_MIN = 0.35   # dimmest point, as a fraction of the base color
+    BREATH_STEPS = 26   # one full breath ≈ 2 s at the ~80 ms frame interval
+    RESET = "\x1b[0m"
+
+    def __init__(self, style: str | None = None, color: str | None = None):
         if style is None:
             style = random.choice(tuple(SPINNER_STYLES))
         elif style not in SPINNER_STYLES:
             style = DEFAULT_SPINNER
         self.style = style
+        if color is None:
+            color = configured_color()
+        if color not in SPINNER_COLORS:
+            color = random.choice(tuple(SPINNER_COLORS))
+        self.color = color
+        self._prefixes = self._breath_prefixes()
         self._interval, self._frames = SPINNER_STYLES[style]
         self._blank = " " * max(len(f) for f in self._frames)
         self._fh = None
@@ -129,6 +161,32 @@ class Spinner:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._drawn = False
+
+    def _breath_prefixes(self) -> tuple[str, ...]:
+        """ANSI color prefixes for one breath cycle, dim-bright-dim.
+
+        Empty when color must not be used; the run loop then writes
+        plain frames.
+        """
+        if os.environ.get("NO_COLOR") is not None:
+            return ()
+        term = os.environ.get("TERM", "")
+        if not term or term == "dumb":
+            return ()
+        colorterm = os.environ.get("COLORTERM", "").lower()
+        truecolor = "truecolor" in colorterm or "24bit" in colorterm
+        base = SPINNER_COLORS[self.color]
+        prefixes = []
+        for i in range(self.BREATH_STEPS):
+            phase = math.cos(2 * math.pi * i / self.BREATH_STEPS)
+            factor = self.BREATH_MIN + (1 - self.BREATH_MIN) * (0.5 + 0.5 * phase)
+            r, g, b = (round(c * factor) for c in base)
+            if truecolor:
+                prefixes.append(f"\x1b[38;2;{r};{g};{b}m")
+            else:
+                code = 16 + 36 * round(r / 255 * 5) + 6 * round(g / 255 * 5) + round(b / 255 * 5)
+                prefixes.append(f"\x1b[38;5;{code}m")
+        return tuple(prefixes)
 
     @property
     def enabled(self) -> bool:
@@ -145,8 +203,12 @@ class Spinner:
         i = 0
         while not self._stop_event.wait(self._interval):
             with self._lock:
+                frame = self._frames[i % len(self._frames)]
+                if self._prefixes:
+                    prefix = self._prefixes[i % len(self._prefixes)]
+                    frame = prefix + frame + self.RESET
                 try:
-                    self._fh.write("\r" + self._frames[i % len(self._frames)])
+                    self._fh.write("\r" + frame)
                     self._fh.flush()
                 except (OSError, ValueError):
                     return
@@ -281,6 +343,11 @@ def configured_default() -> str | None:
     return backend if backend in BACKENDS else None
 
 
+def configured_color() -> str | None:
+    color = (load_user_config().get("color") or "").strip().lower()
+    return color if color in SPINNER_COLORS else None
+
+
 def resolve_backend(state: dict, override: str | None = None) -> str:
     if override in BACKENDS:
         return override
@@ -397,6 +464,7 @@ def completion_script(shell: str) -> str:
     described = " ".join(f"'{name}:{desc}'" for name, desc in COMPLETION_COMMANDS)
     backends = " ".join(BACKENDS)
     styles = " ".join(SPINNER_STYLES)
+    colors = " ".join((*SPINNER_COLORS, "random"))
     names = " ".join(("@", *ARGV0_ALIASES))
 
     if shell == "zsh":
@@ -423,9 +491,15 @@ _at_agent() {{
         return ;;
       --completion)
         _values 'shell' zsh bash; return ;;
+      --color)
+        _values 'color' {colors}; return ;;
       --spinner-test)
         _values 'style' {styles}; return ;;
     esac
+  fi
+  if (( CURRENT == 4 )) && [[ ${{words[2]}} == --spinner-test ]]; then
+    _values 'color' {colors}
+    return
   fi
   _default
 }}
@@ -449,9 +523,14 @@ _at_agent() {{
         COMPREPLY=( $(compgen -W "$(command @ --saved-names 2>/dev/null)" -- "$cur") ) ;;
       --completion)
         COMPREPLY=( $(compgen -W "zsh bash" -- "$cur") ) ;;
+      --color)
+        COMPREPLY=( $(compgen -W "{colors}" -- "$cur") ) ;;
       --spinner-test)
         COMPREPLY=( $(compgen -W "{styles}" -- "$cur") ) ;;
     esac
+  fi
+  if [[ $COMP_CWORD -eq 3 && ${{COMP_WORDS[1]}} == --spinner-test ]]; then
+    COMPREPLY=( $(compgen -W "{colors}" -- "$cur") )
   fi
 }}
 complete -F _at_agent {names}
@@ -533,7 +612,9 @@ Usage:
   @ --list              List named conversations for this repo
   @ --forget [name]     Forget the current conversation (or a named one)
   @ --status            Show the repo, backend, and saved conversations
-  @ --spinner-test [x]  Test the thinking animation (dots..dots11, random default)
+  @ --color [name]      Show or set the spinner color (or 'random')
+  @ --spinner-test [x] [color]
+                        Test the thinking animation (dots..dots11, random default)
   @ --version           Show the installed version
   @ --update            Update @ to the latest version from GitHub
   @ --completion <sh>   Print completion script for zsh or bash
@@ -1064,18 +1145,45 @@ def main(argv: list[str]) -> int:
             return 2
         return self_update()
 
-    if command == "spinner-test":
+    if command == "color":
         if len(args) > 1:
-            eprint("@: usage: @ --spinner-test [style]")
+            eprint(f"@: usage: @ --color [{'|'.join(SPINNER_COLORS)}|random]")
+            return 2
+        if not args:
+            configured = configured_color()
+            if configured:
+                print(f"spinner color: {configured}  ({USER_CONFIG})")
+            else:
+                print("spinner color: random  (built-in)")
+            return 0
+        choice = args[0].lower()
+        cfg = load_user_config()
+        if choice == "random":
+            cfg.pop("color", None)
+            save_user_config(cfg)
+            print("@ spinner color: random")
+            return 0
+        if choice not in SPINNER_COLORS:
+            eprint(f"@: usage: @ --color [{'|'.join(SPINNER_COLORS)}|random]")
+            return 2
+        cfg["color"] = choice
+        save_user_config(cfg)
+        print(f"@ spinner color: {choice}  ({USER_CONFIG})")
+        return 0
+
+    if command == "spinner-test":
+        if len(args) > 2:
+            eprint("@: usage: @ --spinner-test [style] [color]")
             return 2
         style = args[0] if args else None
-        spinner = Spinner(style)
+        color = args[1] if len(args) > 1 else None
+        spinner = Spinner(style, color)
         spinner.start()
         try:
             time.sleep(3)
         finally:
             spinner.stop()
-        print(f"spinner test complete ({spinner.style})")
+        print(f"spinner test complete ({spinner.style}, {spinner.color})")
         return 0
 
     if command == "forget" and len(args) == 1:

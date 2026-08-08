@@ -95,7 +95,8 @@ Commands:
 @ --switch <name>      Activate a named conversation (also switches backend)
 @ --list               List named conversations for the current project
 @ --forget [name]      Forget the current conversation, or delete a named one
-@ --spinner-test [x]   Test the thinking animation without invoking the backend
+@ --color [name]       Show or set the spinner color, or 'random' (~/.at/config.json)
+@ --spinner-test [x] [color]   Test the thinking animation without invoking the backend
 @ --version            Show the installed version
 @ --update             Replace the installed @ with the latest from the repo
 @ --completion <sh>    Print a completion script for zsh or bash
@@ -243,6 +244,22 @@ Style selection:
 
 The frames repeat continuously.
 
+Color:
+
+- The spinner is colored, and the color "breathes": brightness pulses
+  smoothly between full and ~35 % of the base color, one cycle ≈ 2 s.
+- Each invocation picks a random base color from the built-in palette,
+  unless the user pinned one with `@ --color <name>` (stored under the
+  `color` key in `~/.at/config.json`; `@ --color random` unpins).
+- Truecolor escapes are used when `COLORTERM` advertises
+  truecolor/24bit, otherwise the nearest 256-color cube entry.
+- Color must be disabled entirely when `NO_COLOR` is set, or `TERM` is
+  `dumb` or unset. Frames are then rendered plain — never drop the
+  animation itself just because color is unavailable.
+- Unknown color names fall back to a random palette color.
+- Color codes follow the same TTY rules as the frames: they must never
+  reach redirected or piped output.
+
 Important behavior:
 
 - Render the animation on one terminal line.
@@ -256,10 +273,10 @@ Important behavior:
 - If no interactive terminal is available, silently disable the animation.
 - Never emit spinner escape sequences into redirected or piped output.
 
-`@ --spinner-test [style]` should animate for roughly three seconds (a random style, or the named one) and then print:
+`@ --spinner-test [style] [color]` should animate for roughly three seconds (a random style/color, or the named ones) and then print:
 
 ```text
-spinner test complete (<style>)
+spinner test complete (<style>, <color>)
 ```
 
 Use this command to debug terminal rendering independently of the backends.
