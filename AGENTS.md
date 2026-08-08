@@ -82,6 +82,7 @@ Commands:
 ```text
 @ --status             Show project root, backend, conversation IDs, and state file
 @ --use <backend>      Choose the backend: codex, claude or opencode
+@ --on <backend> <instruction>   Run one prompt on another backend (nothing saved)
 @ --new                Start a fresh conversation for the current project
 @ --save <name>        Name the active backend's current conversation
 @ --switch <name>      Activate a named conversation (also switches backend)
@@ -128,9 +129,16 @@ This makes `git diff | @ "review this change"` deterministic on every backend. W
 
 Resolution order:
 
-1. `backend` in the project state file (set via `@ --use ...`);
-2. the `AT_AGENT_BACKEND` environment variable;
-3. default: `codex`.
+1. per-invocation override: `@ --on <backend> ...`, or `argv[0]` is one of
+   the symlink aliases `@x` (codex), `@c` (claude), `@o` (opencode);
+2. `backend` in the project state file (set via `@ --use ...`);
+3. the `AT_AGENT_BACKEND` environment variable;
+4. default: `codex`.
+
+Per-invocation overrides must never write the backend choice to the state
+file. The overridden backend's conversation ID is still saved and resumed
+as usual. The installer does not create the alias symlinks; users opt in
+with `ln -s`.
 
 ## Codex integration
 

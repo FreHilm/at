@@ -36,11 +36,16 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 UPDATE_URL = "https://raw.githubusercontent.com/FreHilm/at/main/@"
 
 BACKENDS = ("codex", "claude", "opencode")
 DEFAULT_BACKEND = "codex"
+
+# Invoking @ through one of these names pins the backend for that call
+# (state and $AT_AGENT_BACKEND are ignored, nothing is saved):
+#   ln -s ~/.local/bin/@ ~/.local/bin/@c   etc.
+ARGV0_ALIASES = {"@x": "codex", "@c": "claude", "@o": "opencode"}
 
 # Piped input is embedded in the prompt, which is passed as a single
 # argv argument. Linux caps one argument at 128 KiB (MAX_ARG_STRLEN),
@@ -234,7 +239,9 @@ def save_state(root: Path, state: dict) -> None:
     os.replace(tmp, path)
 
 
-def resolve_backend(state: dict) -> str:
+def resolve_backend(state: dict, override: str | None = None) -> str:
+    if override in BACKENDS:
+        return override
     backend = state.get("backend") or os.environ.get("AT_AGENT_BACKEND", "")
     backend = backend.strip().lower()
     return backend if backend in BACKENDS else DEFAULT_BACKEND
@@ -390,6 +397,9 @@ def print_help() -> None:
 Usage:
   @ <instruction>       Ask the agent to work in the current repo/directory
   @ --use <backend>     Choose backend: codex, claude or opencode
+  @ --on <backend> <instruction>
+                        One-shot: run this prompt on another backend
+                        without changing the repo's saved choice
   @ --new               Start a fresh conversation for this repo
   @ --save <name>       Name the current conversation
   @ --switch <name>     Switch to a named conversation
@@ -414,6 +424,9 @@ Examples:
 
 Backend:
   Per-repo via '@ --use ...', else $AT_AGENT_BACKEND, else codex.
+  One call only: '@ --on <backend> ...', or invoke through a symlink
+  named @x (codex), @c (claude) or @o (opencode):
+    ln -s ~/.local/bin/@ ~/.local/bin/@c
 
 State:
   ~/.local/state/at-agent/   (or $XDG_STATE_HOME/at-agent)
@@ -742,6 +755,7 @@ RUNNERS = {"codex": run_codex, "claude": run_claude, "opencode": run_opencode}
 
 def main(argv: list[str]) -> int:
     root = repo_root()
+    override = ARGV0_ALIASES.get(Path(argv[0]).name) if argv else None
 
     if len(argv) < 2:
         print_help()
@@ -761,7 +775,7 @@ def main(argv: list[str]) -> int:
         if piped:
             prompt = f"{prompt}\n\nPiped input:\n{piped}"
         state = load_state(root)
-        backend = resolve_backend(state)
+        backend = resolve_backend(state, override)
         return RUNNERS[backend](root, prompt, state)
 
     if first in ("-h", "--help"):
@@ -780,7 +794,18 @@ def main(argv: list[str]) -> int:
     args = argv[2:]
 
     state = load_state(root)
-    backend = resolve_backend(state)
+    backend = resolve_backend(state, override)
+
+    if command == "on":
+        choice = args[0].lower() if args else ""
+        prompt = " ".join(args[1:]).strip()
+        if choice not in BACKENDS or not prompt:
+            eprint(f"@: usage: @ --on {'|'.join(BACKENDS)} <instruction>")
+            return 2
+        piped = read_piped_stdin()
+        if piped:
+            prompt = f"{prompt}\n\nPiped input:\n{piped}"
+        return RUNNERS[choice](root, prompt, state)
 
     if command == "status":
         if args:

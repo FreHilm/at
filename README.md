@@ -79,6 +79,7 @@ Requirements: `python3`, macOS or Linux. `git` is optional — it's used to find
 ```text
 @ <instruction>       Ask the agent to work in the current repo/directory
 @ --use <backend>     Choose backend: codex, claude or opencode
+@ --on <backend> <instruction>   One-shot prompt on another backend
 @ --new               Start a fresh conversation for this repo
 @ --save <name>       Name the current conversation
 @ --switch <name>     Switch to a named conversation
@@ -106,6 +107,19 @@ Each backend keeps its own conversation, so switching never loses the other's th
 @ say hello
 @ --use codex        # the Claude session is still saved
 @ --status
+```
+
+For a single prompt on another backend — say, a second opinion — use `--on`, which leaves the repo's saved choice untouched:
+
+```sh
+git diff | @ --on claude "review this change"
+```
+
+Or make it muscle memory with backend-pinned symlinks: invoked as `@x`, `@c`, or `@o`, the same script pins codex, claude, or opencode for that call:
+
+```sh
+ln -s ~/.local/bin/@ ~/.local/bin/@c
+@c what do you think of this approach
 ```
 
 ## What output looks like
