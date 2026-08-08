@@ -52,6 +52,12 @@ Persistent state is stored under:
 ${XDG_STATE_HOME:-~/.local/state}/at-agent/
 ```
 
+Global user configuration (currently only the default backend) lives in:
+
+```text
+~/.at/config.json
+```
+
 Conversation state is scoped per project.
 
 Project identity should use:
@@ -82,6 +88,7 @@ Commands:
 ```text
 @ --status             Show project root, backend, conversation IDs, and state file
 @ --use <backend>      Choose the backend: codex, claude or opencode
+@ --default [backend]  Show or set the global default backend (~/.at/config.json)
 @ --on <backend> <instruction>   Run one prompt on another backend (nothing saved)
 @ --new                Start a fresh conversation for the current project
 @ --save <name>        Name the active backend's current conversation
@@ -133,12 +140,22 @@ Resolution order:
    the symlink aliases `@x` (codex), `@c` (claude), `@o` (opencode);
 2. `backend` in the project state file (set via `@ --use ...`);
 3. the `AT_AGENT_BACKEND` environment variable;
-4. default: `codex`.
+4. the global user default (set via `@ --default ...`, stored in
+   `~/.at/config.json`);
+5. built-in default: `claude` if installed, otherwise the first installed
+   backend in declaration order; `claude` when none are installed (its
+   runner then prints the install hint).
 
 Per-invocation overrides must never write the backend choice to the state
 file. The overridden backend's conversation ID is still saved and resumed
 as usual. The installer does not create the alias symlinks; users opt in
 with `ln -s`.
+
+The installed-backend fallback applies only when no explicit choice exists
+at any level: an explicitly chosen backend that is missing from PATH must
+error clearly, never silently switch. Malformed or unknown values in
+`~/.at/config.json` are ignored, never fatal. Writes to the config use the
+same temp-file + `os.replace` pattern as project state.
 
 ## Codex integration
 

@@ -78,7 +78,8 @@ Requirements: `python3`, macOS or Linux. `git` is optional — it's used to find
 
 ```text
 @ <instruction>       Ask the agent to work in the current repo/directory
-@ --use <backend>     Choose backend: codex, claude or opencode
+@ --use <backend>     Choose backend for this repo: codex, claude or opencode
+@ --default [backend] Show or set your default backend (all repos)
 @ --on <backend> <instruction>   One-shot prompt on another backend
 @ --new               Start a fresh conversation for this repo
 @ --save <name>       Name the current conversation
@@ -98,7 +99,10 @@ The backend is resolved per project, in this order:
 
 1. `@ --use codex|claude|opencode` (saved for the repo)
 2. The `AT_AGENT_BACKEND` environment variable
-3. Default: `codex`
+3. Your global choice: `@ --default codex|claude|opencode` (saved in `~/.at/config.json`)
+4. `claude` — or, if claude isn't installed, whichever backend is
+
+That last step means a fresh install just works: if you only have one of the backends on your machine, `@` finds and uses it without any setup.
 
 Each backend keeps its own conversation, so switching never loses the other's thread:
 

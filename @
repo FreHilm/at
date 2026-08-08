@@ -36,11 +36,14 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 UPDATE_URL = "https://raw.githubusercontent.com/FreHilm/at/main/@"
 
 BACKENDS = ("codex", "claude", "opencode")
-DEFAULT_BACKEND = "codex"
+DEFAULT_BACKEND = "claude"
+
+# Global user config (default backend), set via '@ --default <backend>'.
+USER_CONFIG = Path.home() / ".at" / "config.json"
 
 # Invoking @ through one of these names pins the backend for that call
 # (state and $AT_AGENT_BACKEND are ignored, nothing is saved):
@@ -239,12 +242,44 @@ def save_state(root: Path, state: dict) -> None:
     os.replace(tmp, path)
 
 
+def load_user_config() -> dict:
+    try:
+        cfg = json.loads(USER_CONFIG.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def save_user_config(cfg: dict) -> None:
+    USER_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    tmp = USER_CONFIG.with_name(f"{USER_CONFIG.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(cfg, indent=2) + "\n")
+    os.replace(tmp, USER_CONFIG)
+
+
+def configured_default() -> str | None:
+    backend = (load_user_config().get("backend") or "").strip().lower()
+    return backend if backend in BACKENDS else None
+
+
 def resolve_backend(state: dict, override: str | None = None) -> str:
     if override in BACKENDS:
         return override
     backend = state.get("backend") or os.environ.get("AT_AGENT_BACKEND", "")
     backend = backend.strip().lower()
-    return backend if backend in BACKENDS else DEFAULT_BACKEND
+    if backend in BACKENDS:
+        return backend
+    backend = configured_default()
+    if backend:
+        return backend
+    # Nothing chosen anywhere: prefer the built-in default, but fall
+    # back to any installed backend so first runs work out of the box.
+    if shutil.which(DEFAULT_BACKEND):
+        return DEFAULT_BACKEND
+    for candidate in BACKENDS:
+        if shutil.which(candidate):
+            return candidate
+    return DEFAULT_BACKEND
 
 
 def get_conversation(state: dict, backend: str) -> str | None:
@@ -396,7 +431,8 @@ def print_help() -> None:
 
 Usage:
   @ <instruction>       Ask the agent to work in the current repo/directory
-  @ --use <backend>     Choose backend: codex, claude or opencode
+  @ --use <backend>     Choose backend for this repo: codex, claude or opencode
+  @ --default [backend] Show or set your default backend (all repos)
   @ --on <backend> <instruction>
                         One-shot: run this prompt on another backend
                         without changing the repo's saved choice
@@ -423,13 +459,16 @@ Examples:
   pytest 2>&1 | @ "why is this failing"
 
 Backend:
-  Per-repo via '@ --use ...', else $AT_AGENT_BACKEND, else codex.
+  Per-repo via '@ --use ...', else $AT_AGENT_BACKEND, else your
+  '@ --default ...' choice, else claude — or, if claude is not
+  installed, the first installed backend.
   One call only: '@ --on <backend> ...', or invoke through a symlink
   named @x (codex), @c (claude) or @o (opencode):
     ln -s ~/.local/bin/@ ~/.local/bin/@c
 
 State:
   ~/.local/state/at-agent/   (or $XDG_STATE_HOME/at-agent)
+  ~/.at/config.json          (your --default choice)
 
 Requires:
   python3
@@ -830,6 +869,27 @@ def main(argv: list[str]) -> int:
         if saved:
             print(f"saved:   {len(saved)} conversation(s), see: @ --list")
         print(f"state:   {state_file(root)}")
+        return 0
+
+    if command == "default":
+        if len(args) > 1:
+            eprint(f"@: usage: @ --default [{'|'.join(BACKENDS)}]")
+            return 2
+        if not args:
+            configured = configured_default()
+            if configured:
+                print(f"default backend: {configured}  ({USER_CONFIG})")
+            else:
+                print(f"default backend: {DEFAULT_BACKEND}  (built-in)")
+            return 0
+        choice = args[0].lower()
+        if choice not in BACKENDS:
+            eprint(f"@: usage: @ --default [{'|'.join(BACKENDS)}]")
+            return 2
+        cfg = load_user_config()
+        cfg["backend"] = choice
+        save_user_config(cfg)
+        print(f"@ default backend: {choice}  ({USER_CONFIG})")
         return 0
 
     if command == "use":
