@@ -88,6 +88,8 @@ Commands:
 @ --list               List named conversations for the current project
 @ --forget [name]      Forget the current conversation, or delete a named one
 @ --spinner-test [x]   Test the thinking animation without invoking the backend
+@ --version            Show the installed version
+@ --update             Replace the installed @ with the latest from the repo
 @ --help               Show usage
 ```
 

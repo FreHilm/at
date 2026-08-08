@@ -86,6 +86,8 @@ Requirements: `python3`, macOS or Linux. `git` is optional — it's used to find
 @ --forget [name]     Forget the current conversation (or a named one)
 @ --status            Show the repo, backend, and saved conversations
 @ --spinner-test [x]  Test the thinking animation
+@ --version           Show the installed version
+@ --update            Update @ to the latest version
 @ --help              Show help
 ```
 

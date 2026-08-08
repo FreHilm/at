@@ -26,12 +26,18 @@ import hashlib
 import json
 import os
 import random
+import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
+
+VERSION = "0.1.0"
+UPDATE_URL = "https://raw.githubusercontent.com/FreHilm/at/main/@"
 
 BACKENDS = ("codex", "claude", "opencode")
 DEFAULT_BACKEND = "codex"
@@ -319,6 +325,64 @@ def read_piped_stdin() -> str:
     return data.strip("\n")
 
 
+def self_update() -> int:
+    """Replace this script with the latest version from the repo.
+
+    The download is validated (shebang, parses as Python) before it
+    atomically replaces the running file, so a failed or garbage
+    download can never leave a broken @ behind.
+    """
+    target = Path(__file__).resolve()
+
+    try:
+        with urllib.request.urlopen(UPDATE_URL, timeout=30) as resp:
+            data = resp.read()
+    except (urllib.error.URLError, OSError) as exc:
+        eprint(f"@: update failed: {exc}")
+        return 1
+
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        eprint("@: update failed: downloaded file is not valid UTF-8")
+        return 1
+
+    if not text.startswith("#!"):
+        eprint("@: update failed: downloaded file does not look like a script")
+        return 1
+    try:
+        compile(text, str(target), "exec")
+    except (SyntaxError, ValueError) as exc:
+        eprint(f"@: update failed: downloaded file does not parse: {exc}")
+        return 1
+
+    match = re.search(r'^VERSION = "([^"]+)"', text, re.MULTILINE)
+    new_version = match.group(1) if match else "unknown"
+
+    try:
+        if text == target.read_text():
+            print(f"@ {VERSION} is already up to date")
+            return 0
+    except OSError:
+        pass  # unreadable current file: proceed with the replacement
+
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text)
+        tmp.chmod(target.stat().st_mode)
+        os.replace(tmp, target)
+    except OSError as exc:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        eprint(f"@: update failed: {exc}")
+        return 1
+
+    print(f"@ updated: {VERSION} -> {new_version} ({target})")
+    return 0
+
+
 def print_help() -> None:
     print(
         """@ — shell-native AI agent (Codex, Claude Code or opencode)
@@ -333,6 +397,8 @@ Usage:
   @ --forget [name]     Forget the current conversation (or a named one)
   @ --status            Show the repo, backend, and saved conversations
   @ --spinner-test [x]  Test the thinking animation (dots..dots11, random default)
+  @ --version           Show the installed version
+  @ --update            Update @ to the latest version from GitHub
   @ --help              Show this help
 
 Commands always start with '--'; anything else is sent to the agent,
@@ -702,6 +768,10 @@ def main(argv: list[str]) -> int:
         print_help()
         return 0
 
+    if first in ("-V", "--version"):
+        print(f"@ {VERSION}")
+        return 0
+
     if not first.startswith("--"):
         eprint(f"@: unknown option '{first}' (see: @ --help)")
         return 2
@@ -796,6 +866,12 @@ def main(argv: list[str]) -> int:
             marker = "*" if (target == backend and conv_id == current) else " "
             print(f"{marker} {name}  [{target}]  {conv_id}")
         return 0
+
+    if command == "update":
+        if args:
+            eprint("@: usage: @ --update")
+            return 2
+        return self_update()
 
     if command == "spinner-test":
         if len(args) > 1:
