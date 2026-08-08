@@ -37,7 +37,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.1.5"
+VERSION = "0.1.6"
 UPDATE_URL = "https://raw.githubusercontent.com/FreHilm/at/main/@"
 
 BACKENDS = ("codex", "claude", "opencode")
@@ -331,6 +331,9 @@ class Spinner:
 
 _active_spinner: Spinner | None = None
 
+# Quiet mode (-q): no spinner, no tool/command echo — answer only.
+QUIET = False
+
 
 def oprint(*args, **kwargs):
     spinner = _active_spinner
@@ -346,6 +349,15 @@ def eprint(*args, **kwargs):
         spinner.emit(sys.stderr, *args, **kwargs)
     else:
         print(*args, file=sys.stderr, **kwargs)
+
+
+def tprint(*args, **kwargs):
+    """Tool/command echo to stderr; silenced by quiet mode (-q).
+
+    Errors and warnings must use eprint so they survive quiet mode.
+    """
+    if not QUIET:
+        eprint(*args, **kwargs)
 
 
 def repo_root() -> Path:
@@ -751,11 +763,11 @@ def render_codex_event(event: dict) -> None:
             output = item.get("aggregated_output")
             exit_code = item.get("exit_code")
             if cmd:
-                eprint(f"  $ {cmd}")
+                tprint(f"  $ {cmd}")
             if output:
-                eprint(output.rstrip())
+                tprint(output.rstrip())
             if exit_code not in (None, 0):
-                eprint(f"  [exit {exit_code}]")
+                tprint(f"  [exit {exit_code}]")
             return
 
         # Show useful tool-style items without dumping raw JSON.
@@ -800,7 +812,7 @@ def render_claude_event(event: dict, bash_tool_ids: set[str]) -> None:
                 if name == "Bash" and tool_input.get("command"):
                     if block.get("id"):
                         bash_tool_ids.add(block["id"])
-                    eprint(f"  $ {tool_input['command']}")
+                    tprint(f"  $ {tool_input['command']}")
                 else:
                     target = (
                         tool_input.get("file_path")
@@ -808,7 +820,7 @@ def render_claude_event(event: dict, bash_tool_ids: set[str]) -> None:
                         or tool_input.get("pattern")
                         or ""
                     )
-                    eprint(f"  [{name} {target}]".rstrip() if target else f"  [{name}]")
+                    tprint(f"  [{name} {target}]".rstrip() if target else f"  [{name}]")
         return
 
     if etype == "user":
@@ -823,9 +835,9 @@ def render_claude_event(event: dict, bash_tool_ids: set[str]) -> None:
                 if block.get("tool_use_id") in bash_tool_ids:
                     text = tool_result_text(block)
                     if text.strip():
-                        eprint(text.rstrip())
+                        tprint(text.rstrip())
                 if block.get("is_error"):
-                    eprint("  [tool error]")
+                    tprint("  [tool error]")
         return
 
     if etype == "result":
@@ -857,13 +869,13 @@ def render_opencode_event(event: dict) -> None:
         tool = part.get("tool") or "tool"
         tool_input = tool_state.get("input") or {}
         if tool == "bash" and tool_input.get("command"):
-            eprint(f"  $ {tool_input['command']}")
+            tprint(f"  $ {tool_input['command']}")
             output = tool_state.get("output")
             if output and output.strip():
-                eprint(output.rstrip())
+                tprint(output.rstrip())
             exit_code = (tool_state.get("metadata") or {}).get("exit")
             if exit_code not in (None, 0):
-                eprint(f"  [exit {exit_code}]")
+                tprint(f"  [exit {exit_code}]")
         else:
             title = (
                 tool_state.get("title")
@@ -871,7 +883,7 @@ def render_opencode_event(event: dict) -> None:
                 or tool_input.get("path")
                 or ""
             )
-            eprint(f"  [{tool} {title}]".rstrip() if title else f"  [{tool}]")
+            tprint(f"  [{tool} {title}]".rstrip() if title else f"  [{tool}]")
         return
 
     if etype == "error":
