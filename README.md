@@ -46,6 +46,18 @@ kubectl logs api-7d4b | @ "what went wrong here"
 @ --list                   # see everything you've saved
 ```
 
+**It scripts like a Unix tool.** Quiet mode (`-q`) drops the spinner and the tool echo; stdout carries nothing but the answer, so `@` composes with everything else:
+
+```sh
+# commit with a generated message
+git commit -m "$(git diff --cached | @ -q 'one-line commit message for this change')"
+
+# nightly log triage from cron
+grep ERROR app.log | @ -q "summarize these errors, worst first" >> report.md
+```
+
+Errors still arrive on stderr, and the exit code is the backend's — so `&&` chains and `set -e` behave.
+
 **Your shell stays yours.** `@` never wraps or emulates your shell. Between agent calls you run ordinary commands, inspect what the agent did with `git diff`, and steer with the next `@`. Prompts are never mistaken for commands — only `--` prefixed words are commands, so `@ save this data to a file` goes to the agent, untouched.
 
 **It's inspectable.** The whole thing is a single Python file with no dependencies beyond the standard library. You can read every line of what sits between you and your agent.
@@ -78,6 +90,7 @@ Requirements: `python3`, macOS or Linux. `git` is optional — it's used to find
 
 ```text
 @ <instruction>       Ask the agent to work in the current repo/directory
+@ -q <instruction>    Quiet: no spinner, no tool echo — answer only
 @ --use <backend>     Choose backend for this repo: codex, claude or opencode
 @ --default [backend] Show or set your default backend (all repos)
 @ --on <backend> <instruction>   One-shot prompt on another backend

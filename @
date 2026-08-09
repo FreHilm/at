@@ -54,6 +54,7 @@ ARGV0_ALIASES = {"@x": "codex", "@c": "claude", "@o": "opencode"}
 # Commands offered by shell completion, with one-line descriptions
 # (zsh shows them next to each match).
 COMPLETION_COMMANDS = (
+    ("-q", "quiet — answer only, no spinner or tool echo"),
     ("--use", "choose backend for this repo"),
     ("--default", "show or set your default backend"),
     ("--on", "one-shot prompt on another backend"),
@@ -567,7 +568,9 @@ def completion_script(shell: str) -> str:
 # @ completion for zsh. Load with:  eval "$(@ --completion zsh)"
 _at_agent() {{
   local -a matches
-  if (( CURRENT == 2 )); then
+  local off=0
+  [[ ${{words[2]}} == -q || ${{words[2]}} == --quiet ]] && off=1
+  if (( CURRENT == 2 + off )); then
     if [[ ${{words[CURRENT]}} == -* ]]; then
       matches=({described})
       _describe 'command' matches
@@ -576,8 +579,8 @@ _at_agent() {{
     _default
     return
   fi
-  if (( CURRENT == 3 )); then
-    case ${{words[2]}} in
+  if (( CURRENT == 3 + off )); then
+    case ${{words[2 + off]}} in
       --use|--default|--on)
         _values 'backend' {backends}; return ;;
       --switch|--forget)
@@ -592,7 +595,7 @@ _at_agent() {{
         _values 'style' {styles}; return ;;
     esac
   fi
-  if (( CURRENT == 4 )) && [[ ${{words[2]}} == --spinner-test ]]; then
+  if (( CURRENT == 4 + off )) && [[ ${{words[2 + off]}} == --spinner-test ]]; then
     _values 'color' {colors}
     return
   fi
@@ -605,12 +608,14 @@ compdef _at_agent {names}
 # @ completion for bash. Load with:  eval "$(@ --completion bash)"
 _at_agent() {{
   local cur=${{COMP_WORDS[COMP_CWORD]}}
-  if [[ $COMP_CWORD -eq 1 && $cur == -* ]]; then
+  local off=0
+  [[ ${{COMP_WORDS[1]}} == -q || ${{COMP_WORDS[1]}} == --quiet ]] && off=1
+  if [[ $COMP_CWORD -eq $((1 + off)) && $cur == -* ]]; then
     COMPREPLY=( $(compgen -W "{commands}" -- "$cur") )
     return
   fi
-  if [[ $COMP_CWORD -eq 2 ]]; then
-    case ${{COMP_WORDS[1]}} in
+  if [[ $COMP_CWORD -eq $((2 + off)) ]]; then
+    case ${{COMP_WORDS[1 + off]}} in
       --use|--default|--on)
         COMPREPLY=( $(compgen -W "{backends}" -- "$cur") ) ;;
       --switch|--forget)
@@ -624,7 +629,7 @@ _at_agent() {{
         COMPREPLY=( $(compgen -W "{styles}" -- "$cur") ) ;;
     esac
   fi
-  if [[ $COMP_CWORD -eq 3 && ${{COMP_WORDS[1]}} == --spinner-test ]]; then
+  if [[ $COMP_CWORD -eq $((3 + off)) && ${{COMP_WORDS[1 + off]}} == --spinner-test ]]; then
     COMPREPLY=( $(compgen -W "{colors}" -- "$cur") )
   fi
 }}
@@ -696,6 +701,7 @@ def print_help() -> None:
 
 Usage:
   @ <instruction>       Ask the agent to work in the current repo/directory
+  @ -q <instruction>    Quiet: no spinner, no tool echo — answer only
   @ --use <backend>     Choose backend for this repo: codex, claude or opencode
   @ --default [backend] Show or set your default backend (all repos)
   @ --on <backend> <instruction>
@@ -923,9 +929,11 @@ def stream_agent(
         return 1
 
     global _active_spinner
-    spinner = Spinner()
-    _active_spinner = spinner
-    spinner.start()
+    spinner = None
+    if not QUIET:
+        spinner = Spinner()
+        _active_spinner = spinner
+        spinner.start()
     interrupted = False
 
     try:
@@ -950,8 +958,9 @@ def stream_agent(
         rc = INTERRUPT_EXIT
         interrupted = True
     finally:
-        spinner.stop()
-        _active_spinner = None
+        if spinner is not None:
+            spinner.stop()
+            _active_spinner = None
 
     if interrupted:
         eprint("@: interrupted; conversation saved, ask again to continue")
@@ -1061,12 +1070,22 @@ RUNNERS = {"codex": run_codex, "claude": run_claude, "opencode": run_opencode}
 
 
 def main(argv: list[str]) -> int:
+    global QUIET
     root = repo_root()
     override = ARGV0_ALIASES.get(Path(argv[0]).name) if argv else None
 
     if len(argv) < 2:
         print_help()
         return 0
+
+    # Quiet mode is a leading flag; everything after it works as usual:
+    #   @ -q fix the tests        @ -q --on claude "second opinion"
+    if argv[1] in ("-q", "--quiet"):
+        QUIET = True
+        argv = argv[:1] + argv[2:]
+        if len(argv) < 2:
+            print_help()
+            return 0
 
     first = argv[1]
 

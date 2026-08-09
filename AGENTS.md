@@ -86,6 +86,7 @@ Legacy state files with a top-level `thread_id` are migrated on load: the value 
 Commands:
 
 ```text
+@ -q <instruction>     Quiet mode: no spinner, no tool echo — answer only
 @ --status             Show project root, backend, conversation IDs, and state file
 @ --use <backend>      Choose the backend: codex, claude or opencode
 @ --default [backend]  Show or set the global default backend (~/.at/config.json)
@@ -322,6 +323,15 @@ Errors emitted by the wrapper should use a short prefix:
 ```text
 @: <message>
 ```
+
+Quiet mode (`@ -q ...`, or `--quiet`) is a leading flag; everything after
+it is parsed as usual (`@ -q --on claude ...` works). It suppresses the
+spinner and all tool/command echo on stderr, leaving only assistant text
+on stdout. It must NOT suppress errors or warnings: `@ error:`, `@:`
+messages, resume-failure hints, and the piped-input truncation warning
+still print to stderr. Conversation state is saved exactly as in normal
+mode. In code, tool echo goes through `tprint` (quiet-aware) and
+errors/warnings through `eprint` — new output must pick the right one.
 
 ## Implementation constraints
 
