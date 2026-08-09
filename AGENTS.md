@@ -87,23 +87,33 @@ Legacy state files with a top-level `thread_id` are migrated on load: the value 
 Commands:
 
 ```text
-@ -q <instruction>     Quiet mode: no spinner, no tool echo — answer only
-@ --status             Show project root, backend, conversation IDs, and state file
-@ --use <backend>      Choose the backend: codex, claude, opencode or gemini
-@ --default [backend]  Show or set the global default backend (~/.at/config.json)
-@ --on <backend> <instruction>   Run one prompt on another backend (nothing saved)
-@ --new                Start a fresh conversation for the current project
-@ --save <name>        Name the active backend's current conversation
-@ --switch <name>      Activate a named conversation (also switches backend)
-@ --list               List named conversations for the current project
-@ --forget [name]      Forget the current conversation, or delete a named one
-@ --color [name]       Show or set the spinner color, or 'random' (~/.at/config.json)
-@ --spinner-test [x] [color]   Test the thinking animation without invoking the backend
-@ --version            Show the installed version
-@ --update             Replace the installed @ with the latest from the repo
-@ --completion <sh>    Print a completion script for zsh or bash
-@ --saved-names        Hidden helper: saved conversation names, one per line
-@ --help               Show usage
+Asking / Executing:
+  @ <instruction>        Ask the agent to work in the current repo/directory
+  @ -q <instruction>     Quiet mode: no spinner, no tool echo — answer only
+  @ --on <backend> <instruction>   Run one prompt on another backend (nothing saved)
+
+Backend Configuration:
+  @ --use <backend>      Choose the backend: codex, claude, opencode or gemini
+  @ --default [backend]  Show or set the global default backend (~/.at/config.json)
+
+Conversation Management:
+  @ --new                Start a fresh conversation for the current project
+  @ --save <name>        Name the active backend's current conversation
+  @ --switch <name>      Activate a named conversation (also switches backend)
+  @ --list               List named conversations for the current project
+  @ --forget [name]      Forget the current conversation, or delete a named one
+
+Status & Styling:
+  @ --status             Show project root, backend, conversation IDs, and state file
+  @ --color [name]       Show or set the spinner color, or 'random' (~/.at/config.json)
+  @ --spinner-test [x] [color]   Test the thinking animation without invoking the backend
+
+System & Utilities:
+  @ --version            Show the installed version
+  @ --update             Replace the installed @ with the latest from the repo
+  @ --completion <sh>    Print a completion script for zsh or bash
+  @ --saved-names        Hidden helper: saved conversation names, one per line
+  @ --help               Show usage
 ```
 
 ## Named conversations
@@ -237,7 +247,7 @@ Do not pass `--auto` (auto-approves permissions; opencode itself marks it danger
 The wrapper invokes the Gemini CLI in non-interactive (headless) mode with streaming JSON events:
 
 ```text
-gemini --output-format stream-json --skip-trust [-r <session-id>] -p <prompt>
+gemini --output-format stream-json --skip-trust --approval-mode auto_edit [-r <session-id>] -p <prompt>
 ```
 
 The prompt is the value of `-p`, not a positional argument. Gemini scopes sessions to the working directory, so the wrapper runs it with the project root as the subprocess `cwd` and resumes with `--resume <session-uuid>`.
@@ -252,7 +262,9 @@ Relevant stream events:
 
 Documented exit codes: 0 success, 1 error, 42 input error, 53 turn limit. Non-zero with a saved session triggers the standard stale-resume hint.
 
-Workspace trust: headless Gemini refuses to run in untrusted directories, so the wrapper passes `--skip-trust` (session-scoped, not persisted). Rationale: no other backend gates on folder trust, and invoking `@` in a directory is the user's explicit choice to run an agent there — this aligns Gemini with the rest rather than widening anything. Tool permissions remain untouched: do not pass `--yolo` or any `--approval-mode` value, and never persist trust in Gemini's config on the user's behalf.
+Workspace trust: headless Gemini refuses to run in untrusted directories, so the wrapper passes `--skip-trust` (session-scoped, not persisted). Rationale: no other backend gates on folder trust, and invoking `@` in a directory is the user's explicit choice to run an agent there — this aligns Gemini with the rest rather than widening anything. Never persist trust in Gemini's config on the user's behalf.
+
+Approvals: Gemini's default approval mode prompts before edit tools run; headless runs cannot answer, so file edits would always fail. The wrapper passes `--approval-mode auto_edit`, which auto-approves edit tools only — this matches the other backends' headless baseline (workspace edits work). Shell and other gated tools still follow Gemini's own policy. Never pass `--yolo` or `--approval-mode yolo`.
 
 ## Thinking indicator
 

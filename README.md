@@ -83,23 +83,32 @@ Requirements: `python3`, macOS or Linux. `git` is optional — it's used to find
 ## Commands
 
 ```text
-@ <instruction>       Ask the agent to work in the current repo/directory
-@ -q <instruction>    Quiet: no spinner, no tool echo — answer only
-@ --use <backend>     Choose backend for this repo: codex, claude, opencode, gemini
-@ --default [backend] Show or set your default backend (all repos)
-@ --on <backend> <instruction>   One-shot prompt on another backend
-@ --new               Start a fresh conversation for this repo
-@ --save <name>       Name the current conversation
-@ --switch <name>     Switch to a named conversation
-@ --list              List named conversations for this repo
-@ --forget [name]     Forget the current conversation (or a named one)
-@ --status            Show the repo, backend, and saved conversations
-@ --color [name]      Show or set the spinner color (or 'random')
-@ --spinner-test [x] [color]  Test the thinking animation
-@ --version           Show the installed version
-@ --update            Update @ to the latest version
-@ --completion <sh>   Print completion script for zsh or bash
-@ --help              Show help
+Asking / Executing:
+  @ <instruction>       Ask the agent to work in the current repo/directory
+  @ -q <instruction>    Quiet: no spinner, no tool echo — answer only
+  @ --on <backend> <instruction>   One-shot prompt on another backend
+
+Backend Configuration:
+  @ --use <backend>     Choose backend for this repo: codex, claude, opencode, gemini
+  @ --default [backend] Show or set your default backend (all repos)
+
+Conversation Management:
+  @ --new               Start a fresh conversation for this repo
+  @ --save <name>       Name the current conversation
+  @ --switch <name>     Switch to a named conversation
+  @ --list              List named conversations for this repo
+  @ --forget [name]     Forget the current conversation (or a named one)
+
+Status & Styling:
+  @ --status            Show the repo, backend, and saved conversations
+  @ --color [name]      Show or set the spinner color (or 'random')
+  @ --spinner-test [x] [color]  Test the thinking animation
+
+System & Utilities:
+  @ --version           Show the installed version
+  @ --update            Update @ to the latest version
+  @ --completion <sh>   Print completion script for zsh or bash
+  @ --help              Show help
 ```
 
 ### Tab completion
