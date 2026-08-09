@@ -12,16 +12,9 @@
 
 `@` turns AI coding agents into a shell command. No app to launch, no interactive mode to enter and leave — you stay in your terminal and talk to the agent the same way you run `git` or `pytest`:
 
-```sh
-git status
-pytest
-
-@ inspect this repo and find the auth bug
-
-git diff
-
-@ keep the existing API and fix it another way
-```
+<p align="center">
+  <img src="demo/at-demo.gif" alt="@ in action: asking for a bug, getting an answer, and a follow-up fix — all from the shell prompt" width="920">
+</p>
 
 Each call streams the agent's work and drops you straight back at your prompt. The conversation carries over between calls, so the agent remembers everything you've discussed in this project.
 
@@ -80,8 +73,8 @@ You'll also need at least one backend CLI installed and authenticated:
 
 | Backend | Command | |
 |---|---|---|
-| [Codex CLI](https://github.com/openai/codex) | `codex` | default |
-| [Claude Code](https://claude.com/claude-code) | `claude` | |
+| [Claude Code](https://claude.com/claude-code) | `claude` | default |
+| [Codex CLI](https://github.com/openai/codex) | `codex` | |
 | [opencode](https://opencode.ai) | `opencode` | |
 
 Requirements: `python3`, macOS or Linux. `git` is optional — it's used to find the project root, but `@` works fine outside repositories too.
