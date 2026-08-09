@@ -2,7 +2,7 @@
 
 ## Project overview
 
-This repository contains `@`, a tiny shell-native wrapper around AI coding agent CLIs. It supports three backends — the OpenAI Codex CLI, Anthropic's Claude Code CLI, and opencode — selected per project.
+This repository contains `@`, a tiny shell-native wrapper around AI coding agent CLIs. It supports four backends — the OpenAI Codex CLI, Anthropic's Claude Code CLI, opencode, and Google's Gemini CLI — selected per project.
 
 The goal is to make an AI coding agent feel like a native shell primitive rather than a separate interactive application.
 
@@ -75,7 +75,8 @@ State file schema:
   "backend": "claude",
   "codex":  {"thread_id": "..."},
   "claude": {"session_id": "..."},
-  "opencode": {"session_id": "..."}
+  "opencode": {"session_id": "..."},
+  "gemini": {"session_id": "..."}
 }
 ```
 
@@ -88,7 +89,7 @@ Commands:
 ```text
 @ -q <instruction>     Quiet mode: no spinner, no tool echo — answer only
 @ --status             Show project root, backend, conversation IDs, and state file
-@ --use <backend>      Choose the backend: codex, claude or opencode
+@ --use <backend>      Choose the backend: codex, claude, opencode or gemini
 @ --default [backend]  Show or set the global default backend (~/.at/config.json)
 @ --on <backend> <instruction>   Run one prompt on another backend (nothing saved)
 @ --new                Start a fresh conversation for the current project
@@ -152,7 +153,7 @@ registers for `@` and the argv[0] aliases.
 Resolution order:
 
 1. per-invocation override: `@ --on <backend> ...`, or `argv[0]` is one of
-   the symlink aliases `@x` (codex), `@c` (claude), `@o` (opencode);
+   the symlink aliases `@x` (codex), `@c` (claude), `@o` (opencode), `@g` (gemini);
 2. `backend` in the project state file (set via `@ --use ...`);
 3. the `AT_AGENT_BACKEND` environment variable;
 4. the global user default (set via `@ --default ...`, stored in
@@ -230,6 +231,28 @@ Relevant stream events (every event carries a top-level `sessionID` — save it 
 - `{"type": "error"}` — `@ error: ...` on stderr.
 
 Do not pass `--auto` (auto-approves permissions; opencode itself marks it dangerous). Do not pass model/agent flags; opencode's own configuration governs those.
+
+## Gemini integration
+
+The wrapper invokes the Gemini CLI in non-interactive (headless) mode with streaming JSON events:
+
+```text
+gemini --output-format stream-json --skip-trust [-r <session-id>] -p <prompt>
+```
+
+The prompt is the value of `-p`, not a positional argument. Gemini scopes sessions to the working directory, so the wrapper runs it with the project root as the subprocess `cwd` and resumes with `--resume <session-uuid>`.
+
+Relevant stream events:
+
+- `{"type": "init", "session_id": ...}` — first event; save the session ID immediately.
+- `{"type": "message", "role": "user" | "assistant", "content": ..., "delta": true}` — the user event echoes the prompt (stay silent). Assistant content arrives as delta chunks: buffer and emit only complete lines; flush the remainder on the next non-message event so fragments never interleave with the spinner.
+- `{"type": "tool_use", "tool_name": ..., "parameters": {...}}` — `run_shell_command` → `  $ <parameters.command>` on stderr; other tools → compact `[tool target]` note.
+- `{"type": "tool_result", "status": ...}` — carries only a status, no tool output; note errors, stay silent on success.
+- `{"type": "error"}` / `{"type": "result", "status": != "success"}` — `@ error: ...` on stderr; a successful `result` is silent.
+
+Documented exit codes: 0 success, 1 error, 42 input error, 53 turn limit. Non-zero with a saved session triggers the standard stale-resume hint.
+
+Workspace trust: headless Gemini refuses to run in untrusted directories, so the wrapper passes `--skip-trust` (session-scoped, not persisted). Rationale: no other backend gates on folder trust, and invoking `@` in a directory is the user's explicit choice to run an agent there — this aligns Gemini with the rest rather than widening anything. Tool permissions remain untouched: do not pass `--yolo` or any `--approval-mode` value, and never persist trust in Gemini's config on the user's behalf.
 
 ## Thinking indicator
 
@@ -341,7 +364,7 @@ Keep dependencies limited to the Python standard library unless adding a depende
 
 Expected external commands:
 
-- `codex`, `claude` and/or `opencode` (only the active backend needs to be installed)
+- `codex`, `claude`, `opencode` and/or `gemini` (only the active backend needs to be installed)
 - `git` (optional; behavior must still work outside Git repositories)
 
 The wrapper should tolerate:
@@ -366,6 +389,8 @@ Background threads should be daemonized or reliably joined.
 Always clear the spinner in `finally`-style cleanup paths, including failures and interrupts where practical.
 
 Avoid races where the spinner writes over agent output.
+
+Backend stderr must not be inherited directly: it is piped and pumped line-by-line through the spinner-aware error printer on a daemon thread, so backend diagnostics (e.g. Gemini's workspace-trust error) stay visible but always appear on a clean line, never appended to a spinner frame or status word.
 
 Ctrl-C must never print a Python traceback. On interrupt: terminate and reap the backend child, clear the spinner, print a one-line `@: interrupted; conversation saved, ask again to continue` notice, and exit with status 130 (128 + SIGINT). The conversation ID is saved eagerly at stream start, so an interrupted question can be re-asked in the same conversation.
 
@@ -419,7 +444,7 @@ At minimum, manually verify:
 @ --new
 ```
 
-Backend switching (repeat the flow for each backend: claude, opencode, codex):
+Backend switching (repeat the flow for each backend: claude, opencode, codex, gemini):
 
 ```sh
 @ --use claude

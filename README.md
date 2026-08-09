@@ -18,7 +18,7 @@
 
 Each call streams the agent's work and drops you straight back at your prompt. The conversation carries over between calls, so the agent remembers everything you've discussed in this project.
 
-Under the hood, `@` drives your choice of **Codex CLI**, **Claude Code**, or **opencode** — one wrapper, one muscle memory, whichever agent you prefer today.
+Under the hood, `@` drives your choice of **Codex CLI**, **Claude Code**, **opencode**, or **Gemini CLI** — one wrapper, one muscle memory, whichever agent you prefer today.
 
 ## Why it's more than a shortcut
 
@@ -76,6 +76,7 @@ You'll also need at least one backend CLI installed and authenticated:
 | [Claude Code](https://claude.com/claude-code) | `claude` | default |
 | [Codex CLI](https://github.com/openai/codex) | `codex` | |
 | [opencode](https://opencode.ai) | `opencode` | |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `gemini` | |
 
 Requirements: `python3`, macOS or Linux. `git` is optional — it's used to find the project root, but `@` works fine outside repositories too.
 
@@ -84,7 +85,7 @@ Requirements: `python3`, macOS or Linux. `git` is optional — it's used to find
 ```text
 @ <instruction>       Ask the agent to work in the current repo/directory
 @ -q <instruction>    Quiet: no spinner, no tool echo — answer only
-@ --use <backend>     Choose backend for this repo: codex, claude or opencode
+@ --use <backend>     Choose backend for this repo: codex, claude, opencode, gemini
 @ --default [backend] Show or set your default backend (all repos)
 @ --on <backend> <instruction>   One-shot prompt on another backend
 @ --new               Start a fresh conversation for this repo
@@ -117,9 +118,9 @@ Completes the commands, backend names, spinner styles — and your saved convers
 
 The backend is resolved per project, in this order:
 
-1. `@ --use codex|claude|opencode` (saved for the repo)
+1. `@ --use codex|claude|opencode|gemini` (saved for the repo)
 2. The `AT_AGENT_BACKEND` environment variable
-3. Your global choice: `@ --default codex|claude|opencode` (saved in `~/.at/config.json`)
+3. Your global choice: `@ --default codex|claude|opencode|gemini` (saved in `~/.at/config.json`)
 4. `claude` — or, if claude isn't installed, whichever backend is
 
 That last step means a fresh install just works: if you only have one of the backends on your machine, `@` finds and uses it without any setup.
@@ -139,7 +140,7 @@ For a single prompt on another backend — say, a second opinion — use `--on`,
 git diff | @ --on claude "review this change"
 ```
 
-Or make it muscle memory with backend-pinned symlinks: invoked as `@x`, `@c`, or `@o`, the same script pins codex, claude, or opencode for that call:
+Or make it muscle memory with backend-pinned symlinks: invoked as `@x`, `@c`, `@o`, or `@g`, the same script pins codex, claude, opencode, or gemini for that call:
 
 ```sh
 ln -s ~/.local/bin/@ ~/.local/bin/@c

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-@ — a tiny shell-native wrapper around AI coding agents (Codex, Claude Code, opencode).
+@ — a tiny shell-native wrapper around AI coding agents (Codex, Claude Code, opencode, Gemini).
 
 Usage:
   @ fix the failing tests
@@ -12,7 +12,7 @@ Usage:
 
 Behavior:
   - One persistent conversation per backend per git repository (or current directory).
-  - Backend is chosen per project: @ --use codex|claude|opencode
+  - Backend is chosen per project: @ --use codex|claude|opencode|gemini
   - Commands are always '--' prefixed; everything else is a prompt.
   - Piped stdin becomes labeled context:  git diff | @ "review this"
   - Normal shell commands remain normal shell commands.
@@ -37,10 +37,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.1.6"
+VERSION = "0.2.0"
 UPDATE_URL = "https://raw.githubusercontent.com/FreHilm/at/main/@"
 
-BACKENDS = ("codex", "claude", "opencode")
+BACKENDS = ("codex", "claude", "opencode", "gemini")
 DEFAULT_BACKEND = "claude"
 
 # Global user config (default backend), set via '@ --default <backend>'.
@@ -49,7 +49,7 @@ USER_CONFIG = Path.home() / ".at" / "config.json"
 # Invoking @ through one of these names pins the backend for that call
 # (state and $AT_AGENT_BACKEND are ignored, nothing is saved):
 #   ln -s ~/.local/bin/@ ~/.local/bin/@c   etc.
-ARGV0_ALIASES = {"@x": "codex", "@c": "claude", "@o": "opencode"}
+ARGV0_ALIASES = {"@x": "codex", "@c": "claude", "@o": "opencode", "@g": "gemini"}
 
 # Commands offered by shell completion, with one-line descriptions
 # (zsh shows them next to each match).
@@ -78,7 +78,12 @@ COMPLETION_COMMANDS = (
 MAX_STDIN_BYTES = 100_000
 
 # Each backend names its resumable conversation differently.
-CONV_KEYS = {"codex": "thread_id", "claude": "session_id", "opencode": "session_id"}
+CONV_KEYS = {
+    "codex": "thread_id",
+    "claude": "session_id",
+    "opencode": "session_id",
+    "gemini": "session_id",
+}
 
 
 # Spinner frames: the "dots" family (dots through dots11) from
@@ -697,12 +702,12 @@ def self_update() -> int:
 
 def print_help() -> None:
     print(
-        """@ — shell-native AI agent (Codex, Claude Code or opencode)
+        """@ — shell-native AI agent (Codex, Claude Code, opencode or Gemini)
 
 Usage:
   @ <instruction>       Ask the agent to work in the current repo/directory
   @ -q <instruction>    Quiet: no spinner, no tool echo — answer only
-  @ --use <backend>     Choose backend for this repo: codex, claude or opencode
+  @ --use <backend>     Choose backend for this repo: codex, claude, opencode, gemini
   @ --default [backend] Show or set your default backend (all repos)
   @ --on <backend> <instruction>
                         One-shot: run this prompt on another backend
@@ -746,7 +751,7 @@ State:
 
 Requires:
   python3
-  codex, claude and/or opencode
+  codex, claude, opencode and/or gemini
 """
     )
 
@@ -900,6 +905,77 @@ def render_opencode_event(event: dict) -> None:
     # step_start / step_finish and other bookkeeping events are silent.
 
 
+def flush_gemini_text(text_buf: list[str]) -> None:
+    if text_buf:
+        text = "".join(text_buf).rstrip("\n")
+        text_buf.clear()
+        if text:
+            oprint(text)
+
+
+def render_gemini_event(event: dict, text_buf: list[str]) -> None:
+    etype = event.get("type")
+
+    if etype == "message":
+        # Gemini echoes the user prompt as a message event; stay silent.
+        if event.get("role") != "assistant":
+            return
+        content = event.get("content")
+        if not content:
+            return
+        # Assistant text arrives as delta chunks. Emit only complete
+        # lines so fragments never interleave with the spinner; the
+        # remainder is flushed on the next non-message event.
+        text_buf.append(content)
+        joined = "".join(text_buf)
+        if "\n" in joined:
+            done, _, rest = joined.rpartition("\n")
+            text_buf.clear()
+            if rest:
+                text_buf.append(rest)
+            for line in done.split("\n"):
+                oprint(line)
+        return
+
+    if etype == "tool_use":
+        flush_gemini_text(text_buf)
+        tool = event.get("tool_name") or "tool"
+        params = event.get("parameters") or {}
+        if tool == "run_shell_command" and params.get("command"):
+            tprint(f"  $ {params['command']}")
+        else:
+            target = (
+                params.get("file_path")
+                or params.get("path")
+                or params.get("pattern")
+                or params.get("agent_name")
+                or ""
+            )
+            tprint(f"  [{tool} {target}]".rstrip() if target else f"  [{tool}]")
+        return
+
+    if etype == "tool_result":
+        # Gemini reports only a status here, no tool output.
+        if event.get("status") not in (None, "success"):
+            tprint("  [tool error]")
+        return
+
+    if etype == "error":
+        flush_gemini_text(text_buf)
+        msg = event.get("message") or event.get("error") or event
+        eprint(f"@ error: {msg}")
+        return
+
+    if etype == "result":
+        flush_gemini_text(text_buf)
+        status = event.get("status")
+        if status not in (None, "success"):
+            eprint(f"@ error: {event.get('message') or status}")
+        return
+
+    # init and other bookkeeping events are silent.
+
+
 def stream_agent(
     cmd: list[str],
     *,
@@ -919,7 +995,9 @@ def stream_agent(
             cmd,
             stdin=agent_stdin(),
             stdout=subprocess.PIPE,
-            stderr=None,  # keep backend diagnostics visible
+            # Pumped through eprint below: backend diagnostics stay
+            # visible but never interleave with the spinner line.
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
             cwd=cwd,
@@ -927,6 +1005,16 @@ def stream_agent(
     except OSError as exc:
         eprint(f"@: failed to start {label}: {exc}")
         return 1
+
+    def pump_stderr() -> None:
+        assert proc.stderr is not None
+        for raw in proc.stderr:
+            raw = raw.rstrip("\n")
+            if raw.strip():
+                eprint(raw)
+
+    stderr_thread = threading.Thread(target=pump_stderr, daemon=True)
+    stderr_thread.start()
 
     global _active_spinner
     spinner = None
@@ -953,6 +1041,7 @@ def stream_agent(
             handle_event(event)
 
         rc = proc.wait()
+        stderr_thread.join(timeout=2.0)
     except KeyboardInterrupt:
         reap_child(proc)
         rc = INTERRUPT_EXIT
@@ -1066,7 +1155,48 @@ def run_opencode(root: Path, prompt: str, state: dict) -> int:
     )
 
 
-RUNNERS = {"codex": run_codex, "claude": run_claude, "opencode": run_opencode}
+def run_gemini(root: Path, prompt: str, state: dict) -> int:
+    if shutil.which("gemini") is None:
+        eprint("@: 'gemini' was not found on PATH.")
+        eprint("Install/authenticate the Gemini CLI first, then retry.")
+        return 127
+
+    session_id = get_conversation(state, "gemini")
+
+    # --skip-trust: session-scoped workspace trust, matching the other
+    # backends (none of which gate on folder trust). Invoking @ in a
+    # directory is the user's explicit choice to run an agent there.
+    # Tool approvals are untouched (--approval-mode is never passed).
+    cmd = ["gemini", "--output-format", "stream-json", "--skip-trust"]
+    if session_id:
+        cmd += ["--resume", session_id]
+    cmd += ["-p", prompt]
+
+    text_buf: list[str] = []
+
+    def handle(event: dict) -> None:
+        if event.get("type") == "init":
+            sid = event.get("session_id")
+            if sid:
+                set_conversation(root, state, "gemini", sid)
+        render_gemini_event(event, text_buf)
+
+    return stream_agent(
+        cmd,
+        cwd=str(root),
+        label="Gemini",
+        noun="session",
+        handle_event=handle,
+        had_conversation=bool(session_id),
+    )
+
+
+RUNNERS = {
+    "codex": run_codex,
+    "claude": run_claude,
+    "opencode": run_opencode,
+    "gemini": run_gemini,
+}
 
 
 def main(argv: list[str]) -> int:
