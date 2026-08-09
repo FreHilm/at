@@ -85,6 +85,8 @@ Requirements: `python3`, macOS or Linux. `git` is optional — it's used to find
 ```text
 Asking / Executing:
   @ <instruction>       Ask the agent to work in the current repo/directory
+  @ --plan <instruction>  Read-only: analyze and plan, change nothing
+  @ --yolo <instruction>  Auto-approve everything (dangerous)
   @ -q <instruction>    Quiet: no spinner, no tool echo — answer only
   @ --on <backend> <instruction>   One-shot prompt on another backend
 
@@ -110,6 +112,18 @@ System & Utilities:
   @ --completion <sh>   Print completion script for zsh or bash
   @ --help              Show help
 ```
+
+### Execution modes
+
+Every call runs at one of three permission levels — the flag is per call, nothing sticks:
+
+```sh
+@ --plan "how would you restructure the auth flow"   # read-only: plan, change nothing
+@ "do it"                                            # normal: may edit workspace files
+@ --yolo "upgrade all deps and fix what breaks"      # auto-approve everything (dangerous)
+```
+
+Normal mode means the same thing on every backend: the agent can edit files in the project (codex `workspace-write`, claude `acceptEdits`, gemini `auto_edit`, opencode's build agent). `--plan` maps to each backend's native read-only/plan mode. `--yolo` maps to each backend's own full-auto flag — use it where you'd trust the backend's `--yolo`/`--dangerously-*` flags directly. Plan and normal share the conversation, so planning first costs nothing: the follow-up already knows the plan.
 
 ### Tab completion
 

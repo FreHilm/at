@@ -37,7 +37,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 UPDATE_URL = "https://raw.githubusercontent.com/FreHilm/at/main/@"
 
 BACKENDS = ("codex", "claude", "opencode", "gemini")
@@ -55,6 +55,8 @@ ARGV0_ALIASES = {"@x": "codex", "@c": "claude", "@o": "opencode", "@g": "gemini"
 # (zsh shows them next to each match).
 COMPLETION_COMMANDS = (
     ("-q", "quiet — answer only, no spinner or tool echo"),
+    ("--plan", "read-only mode — analyze and plan, change nothing"),
+    ("--yolo", "auto-approve everything (dangerous)"),
     ("--use", "choose backend for this repo"),
     ("--default", "show or set your default backend"),
     ("--on", "one-shot prompt on another backend"),
@@ -339,6 +341,12 @@ _active_spinner: Spinner | None = None
 
 # Quiet mode (-q): no spinner, no tool/command echo — answer only.
 QUIET = False
+
+# Execution mode, per invocation only (never sticky, never a default):
+#   normal — the agent may edit files in the workspace
+#   plan   — read-only: analyze and plan, no changes
+#   yolo   — auto-approve everything the backend allows (dangerous)
+MODE = "normal"
 
 
 def oprint(*args, **kwargs):
@@ -708,34 +716,33 @@ Usage:
   @ [command/instruction] [options]
 
 Asking / Executing:
-  @ <instruction>       Ask the agent to work in the current repo/directory
-  @ -q <instruction>    Quiet: no spinner, no tool echo — answer only
-  @ --on <backend> <instruction>
-                        One-shot: run this prompt on another backend
-                        without changing the repo's saved choice
+  @ <instruction>             Ask the agent; normal mode may edit files
+  @ --plan <instruction>      Read-only: analyze and plan, change nothing
+  @ --yolo <instruction>      Auto-approve everything (dangerous)
+  @ -q <instruction>          Quiet: no spinner or tool echo, answer only
+  @ --on <backend> <instr>    One-shot on another backend, nothing saved
 
 Backend Configuration:
-  @ --use <backend>     Choose backend for this repo: codex, claude, opencode, gemini
-  @ --default [backend] Show or set your default backend (all repos)
+  @ --use <backend>           Set repo backend: codex|claude|opencode|gemini
+  @ --default [backend]       Show or set your default backend (all repos)
 
 Conversation Management:
-  @ --new               Start a fresh conversation for this repo
-  @ --save <name>       Name the current conversation
-  @ --switch <name>     Switch to a named conversation
-  @ --list              List named conversations for this repo
-  @ --forget [name]     Forget the current conversation (or a named one)
+  @ --new                     Start a fresh conversation for this repo
+  @ --save <name>             Name the current conversation
+  @ --switch <name>           Switch to a named conversation
+  @ --list                    List named conversations for this repo
+  @ --forget [name]           Forget current conversation (or a named one)
 
 Status & Styling:
-  @ --status            Show the repo, backend, and saved conversations
-  @ --color [name]      Show or set the spinner color (or 'random')
-  @ --spinner-test [x] [color]
-                        Test the thinking animation (dots..dots11, random default)
+  @ --status                  Show repo, backend, and saved conversations
+  @ --color [name]            Show or set the spinner color (or 'random')
+  @ --spinner-test [x] [c]    Test the thinking animation
 
 System & Utilities:
-  @ --version           Show the installed version
-  @ --update            Update @ to the latest version from GitHub
-  @ --completion <sh>   Print completion script for zsh or bash
-  @ --help              Show this help
+  @ --version                 Show the installed version
+  @ --update                  Update @ to the latest version from GitHub
+  @ --completion <sh>         Print completion script for zsh or bash
+  @ --help                    Show this help
 
 Commands always start with '--'; anything else is sent to the agent,
 so prompts like '@ save this data to a file' are never intercepted.
@@ -753,8 +760,13 @@ Backend:
   '@ --default ...' choice, else claude — or, if claude is not
   installed, the first installed backend.
   One call only: '@ --on <backend> ...', or invoke through a symlink
-  named @x (codex), @c (claude) or @o (opencode):
+  named @x (codex), @c (claude), @o (opencode) or @g (gemini):
     ln -s ~/.local/bin/@ ~/.local/bin/@c
+
+Modes:
+  Normal runs may edit workspace files. '--plan' is read-only on every
+  backend. '--yolo' auto-approves everything the backend allows — per
+  call only, never saved as a default.
 
 State:
   ~/.local/state/at-agent/   (or $XDG_STATE_HOME/at-agent)
@@ -1079,7 +1091,25 @@ def run_codex(root: Path, prompt: str, state: dict) -> int:
 
     thread_id = get_conversation(state, "codex")
 
-    cmd = ["codex", "exec", "--json", "--color", "never", "-C", str(root)]
+    # --skip-git-repo-check: codex refuses non-git directories otherwise;
+    # invoking @ in a directory is the user's explicit choice to run an
+    # agent there (same rationale as gemini's --skip-trust).
+    cmd = [
+        "codex",
+        "exec",
+        "--json",
+        "--color",
+        "never",
+        "--skip-git-repo-check",
+        "-C",
+        str(root),
+    ]
+    if MODE == "plan":
+        cmd += ["--sandbox", "read-only"]
+    elif MODE == "yolo":
+        cmd.append("--dangerously-bypass-approvals-and-sandbox")
+    else:
+        cmd += ["--sandbox", "workspace-write"]
     if thread_id:
         cmd += ["resume", thread_id, prompt]
     else:
@@ -1110,7 +1140,16 @@ def run_claude(root: Path, prompt: str, state: dict) -> int:
 
     session_id = get_conversation(state, "claude")
 
-    cmd = ["claude", "-p", "--output-format", "stream-json", "--verbose"]
+    permission = {"plan": "plan", "yolo": "bypassPermissions"}.get(MODE, "acceptEdits")
+    cmd = [
+        "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--permission-mode",
+        permission,
+    ]
     if session_id:
         cmd += ["--resume", session_id]
     cmd.append(prompt)
@@ -1143,6 +1182,10 @@ def run_opencode(root: Path, prompt: str, state: dict) -> int:
     session_id = get_conversation(state, "opencode")
 
     cmd = ["opencode", "run", "--format", "json", "--dir", str(root)]
+    if MODE == "plan":
+        cmd += ["--agent", "plan"]
+    elif MODE == "yolo":
+        cmd.append("--auto")
     if session_id:
         cmd += ["--session", session_id]
     cmd.append(prompt)
@@ -1177,17 +1220,17 @@ def run_gemini(root: Path, prompt: str, state: dict) -> int:
     # --skip-trust: session-scoped workspace trust, matching the other
     # backends (none of which gate on folder trust). Invoking @ in a
     # directory is the user's explicit choice to run an agent there.
-    # --approval-mode auto_edit: headless runs cannot answer Gemini's
-    # edit-approval prompt, so file edits would always fail; auto_edit
-    # unblocks edit tools only — shell and other gated tools still
-    # follow Gemini's own policy. Never pass yolo.
+    # Approval mode carries the @ execution mode: auto_edit unblocks
+    # edit tools for headless runs (which cannot answer prompts), plan
+    # is read-only, yolo only on the user's explicit per-call flag.
+    approval = {"plan": "plan", "yolo": "yolo"}.get(MODE, "auto_edit")
     cmd = [
         "gemini",
         "--output-format",
         "stream-json",
         "--skip-trust",
         "--approval-mode",
-        "auto_edit",
+        approval,
     ]
     if session_id:
         cmd += ["--resume", session_id]
@@ -1221,7 +1264,7 @@ RUNNERS = {
 
 
 def main(argv: list[str]) -> int:
-    global QUIET
+    global QUIET, MODE
     root = repo_root()
     override = ARGV0_ALIASES.get(Path(argv[0]).name) if argv else None
 
@@ -1229,14 +1272,26 @@ def main(argv: list[str]) -> int:
         print_help()
         return 0
 
-    # Quiet mode is a leading flag; everything after it works as usual:
-    #   @ -q fix the tests        @ -q --on claude "second opinion"
-    if argv[1] in ("-q", "--quiet"):
-        QUIET = True
+    # Leading flags, in any order; everything after them works as usual:
+    #   @ -q fix the tests        @ --plan -q --on claude "how would you do X"
+    while len(argv) > 1 and argv[1] in ("-q", "--quiet", "--plan", "--yolo"):
+        flag = argv[1]
+        if flag in ("-q", "--quiet"):
+            QUIET = True
+        elif flag == "--plan":
+            if MODE == "yolo":
+                eprint("@: --plan and --yolo are mutually exclusive")
+                return 2
+            MODE = "plan"
+        else:
+            if MODE == "plan":
+                eprint("@: --plan and --yolo are mutually exclusive")
+                return 2
+            MODE = "yolo"
         argv = argv[:1] + argv[2:]
-        if len(argv) < 2:
-            print_help()
-            return 0
+    if len(argv) < 2:
+        print_help()
+        return 0
 
     first = argv[1]
 

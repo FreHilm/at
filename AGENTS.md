@@ -89,6 +89,8 @@ Commands:
 ```text
 Asking / Executing:
   @ <instruction>        Ask the agent to work in the current repo/directory
+  @ --plan <instruction> Read-only mode: analyze and plan, change nothing
+  @ --yolo <instruction> Auto-approve everything the backend allows (dangerous)
   @ -q <instruction>     Quiet mode: no spinner, no tool echo — answer only
   @ --on <backend> <instruction>   Run one prompt on another backend (nothing saved)
 
@@ -115,6 +117,23 @@ System & Utilities:
   @ --saved-names        Hidden helper: saved conversation names, one per line
   @ --help               Show usage
 ```
+
+## Execution modes
+
+Three per-invocation levels, selected by leading flags (`-q`, `--plan`, `--yolo` compose in any order before the prompt or `--on`):
+
+| Mode | Meaning | codex | claude | opencode | gemini |
+|---|---|---|---|---|---|
+| normal (default) | agent may edit workspace files | `--sandbox workspace-write` | `--permission-mode acceptEdits` | build agent (default) | `--approval-mode auto_edit` |
+| `--plan` | read-only: analyze and plan | `--sandbox read-only` | `--permission-mode plan` | `--agent plan` | `--approval-mode plan` |
+| `--yolo` | auto-approve everything | `--dangerously-bypass-approvals-and-sandbox` | `--permission-mode bypassPermissions` | `--auto` | `--approval-mode yolo` |
+
+Rules:
+
+- The mode is per invocation only. It is never persisted, never a project or global setting, and never inferred — an invocation without a flag is always normal mode.
+- `--plan` and `--yolo` are mutually exclusive (usage error).
+- All modes run in the same project conversation, so `@ --plan "how should we do X"` followed by `@ "do it"` keeps full context.
+- Nuance: claude and opencode treat plan as a behavioral mode (the agent knows it is planning); codex and gemini enforce read-only without changing the agent's framing — the planning instruction lives in the prompt.
 
 ## Named conversations
 
@@ -190,8 +209,10 @@ The wrapper invokes the Codex CLI in non-interactive exec mode and consumes JSON
 Conceptually:
 
 ```text
-codex exec --json ... <prompt>
+codex exec --json --skip-git-repo-check -C <project-root> <sandbox-flag> ... <prompt>
 ```
+
+`--skip-git-repo-check` is always passed: codex otherwise refuses non-git directories, and invoking `@` in a directory is the user's explicit choice to run an agent there (same rationale as gemini's `--skip-trust`). The sandbox flag carries the @ execution mode (see "Execution modes").
 
 For an existing project conversation it resumes the saved thread/session.
 
@@ -264,7 +285,7 @@ Documented exit codes: 0 success, 1 error, 42 input error, 53 turn limit. Non-ze
 
 Workspace trust: headless Gemini refuses to run in untrusted directories, so the wrapper passes `--skip-trust` (session-scoped, not persisted). Rationale: no other backend gates on folder trust, and invoking `@` in a directory is the user's explicit choice to run an agent there — this aligns Gemini with the rest rather than widening anything. Never persist trust in Gemini's config on the user's behalf.
 
-Approvals: Gemini's default approval mode prompts before edit tools run; headless runs cannot answer, so file edits would always fail. The wrapper passes `--approval-mode auto_edit`, which auto-approves edit tools only — this matches the other backends' headless baseline (workspace edits work). Shell and other gated tools still follow Gemini's own policy. Never pass `--yolo` or `--approval-mode yolo`.
+Approvals: Gemini's default approval mode prompts before edit tools run; headless runs cannot answer, so the wrapper always passes an explicit `--approval-mode` carrying the @ execution mode: `auto_edit` (normal), `plan` (read-only), or `yolo` (only on the user's explicit per-call `--yolo` flag — never a default).
 
 ## Thinking indicator
 
@@ -410,7 +431,9 @@ If output rendering becomes more complex, centralize terminal writes rather than
 
 ## Security
 
-Do not silently increase Codex permissions or sandbox access.
+Permission levels are governed by the three execution modes (see "Execution modes"). Beyond them:
+
+Do not silently increase backend permissions or sandbox access — mode escalation happens only through the user's explicit per-invocation `--yolo` flag, never through defaults, config, or inference.
 
 Do not add flags that bypass approvals, sandboxing, or safety controls merely to make the wrapper more convenient.
 
