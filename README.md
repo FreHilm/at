@@ -90,6 +90,11 @@ Asking / Executing:
   @ -q <instruction>    Quiet: no spinner, no tool echo — answer only
   @ --on <backend> <instruction>   One-shot prompt on another backend
 
+Shell integration (zsh/bash):
+  @ --native <instruction>  Print one shell command for the request
+  @ --native-shell <sh>     Print the @@ prefill function (for eval)
+  @ --native-shell-enable   Add the @@ function to your shell rc file
+
 Backend Configuration:
   @ --use <backend>     Choose backend for this repo: codex, claude, opencode, gemini
   @ --default [backend] Show or set your default backend (all repos)
@@ -124,6 +129,27 @@ Every call runs at one of three permission levels — the flag is per call, noth
 ```
 
 Normal mode means the same thing on every backend: the agent can edit files in the project (codex `workspace-write`, claude `acceptEdits`, gemini `auto_edit`, opencode's build agent). `--plan` maps to each backend's native read-only/plan mode. `--yolo` maps to each backend's own full-auto flag — use it where you'd trust the backend's `--yolo`/`--dangerously-*` flags directly. Plan and normal share the conversation, so planning first costs nothing: the follow-up already knows the plan.
+
+### Commands that affect your own shell
+
+Normally an agent runs commands in its own process, so a `cd` or `source` it does can't move *your* shell — a child process can't change its parent's directory or environment (that's why `cd` is a shell builtin, not a program). The `@@` function works with that rule instead of against it: the agent proposes a command, and **your shell** runs it, so `cd`, `export`, and `source` land in your live session.
+
+Enable it once:
+
+```sh
+@ --native-shell-enable          # adds the @@ function to ~/.zshrc (or ~/.bashrc)
+source ~/.zshrc                  # or restart your shell
+```
+
+Then ask for a command and it appears on your prompt, ready to edit and run:
+
+```sh
+@@ activate the venv and cd into the api service
+# your prompt is now prefilled (nothing has run yet):
+$ source .venv/bin/activate && cd services/api█      <- press Enter to run it
+```
+
+The agent runs read-only — it only *composes* the command, it never executes it. You always see the command and press Enter yourself; nothing runs behind your back. On zsh the command is prefilled on your real prompt line (via `print -z`); on bash it's offered in an editable prompt. You can also skip the function and just print the command: `@ --native "…"` writes one command line to stdout.
 
 ### Tab completion
 

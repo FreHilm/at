@@ -177,6 +177,18 @@ names are resolved at completion time through the hidden
 else — completion depends on that format staying stable. The zsh script
 registers for `@` and the argv[0] aliases.
 
+## Native shell integration
+
+A plain executable child cannot change its parent shell's cwd or environment — that is an OS rule, not a limitation to engineer around. The `@@` shell function works *with* that rule: the shell runs the command itself, so `cd`/`export`/`source` land in the live session.
+
+Three pieces:
+
+- `@ --native <instruction>` runs the active backend **read-only** (forces `MODE = "plan"`) with a wrapper instruction asking for one shell command and nothing else. It captures the agent's answer instead of streaming it (`_native_buffer`), reduces it to a single command line via `extract_command` (strips code fences, backticks, a leading `$`, and a `…:` prose lead-in), and prints only that command to stdout — or nothing if no command was produced. Tool echo is suppressed; the spinner still runs (it writes to the tty, never stdout). The call shares the project conversation, so the command is context-aware.
+- `@ --native-shell zsh|bash` prints the `@@` function for the user to `eval` (the wrapper never installs it). zsh uses `print -z` to prefill the command on the real prompt line, unexecuted; bash has no `print -z`, so it offers the command in a `read -e -i` editable prompt. Nothing runs until the user presses Enter.
+- `@ --native-shell-enable [zsh|bash]` appends the `eval "$(@ --native-shell <shell>)"` line to the user's rc file (`~/.zshrc`/`~/.bashrc`), guarded by a marker comment so it is idempotent. Shell is taken from the argument or `$SHELL`. This is the only command that writes to a file outside the state dir; it is append-only, marker-guarded, and never rewrites existing lines.
+
+Design rule: the agent is never told about the shell mechanism. `@` shapes the prompt so the answer *is* a command; the wrapper cleans it and the shell consumes it. This keeps the same `--native` output usable by `print -z`, `eval`, or any future mechanism. `--native` is for composing a command, not iterating on one — the agent cannot run it (that is what gets handed to the user), so there is no run-fix-rerun loop.
+
 ## Backend selection
 
 Resolution order:

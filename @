@@ -37,7 +37,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 UPDATE_URL = "https://raw.githubusercontent.com/FreHilm/at/main/@"
 
 BACKENDS = ("codex", "claude", "opencode", "gemini")
@@ -60,6 +60,9 @@ COMPLETION_COMMANDS = (
     ("--use", "choose backend for this repo"),
     ("--default", "show or set your default backend"),
     ("--on", "one-shot prompt on another backend"),
+    ("--native", "print one shell command for the request"),
+    ("--native-shell", "print the @@ shell function"),
+    ("--native-shell-enable", "add the @@ function to your shell rc"),
     ("--new", "start a fresh conversation"),
     ("--save", "name the current conversation"),
     ("--switch", "switch to a named conversation"),
@@ -348,8 +351,27 @@ QUIET = False
 #   yolo   — auto-approve everything the backend allows (dangerous)
 MODE = "normal"
 
+# When --native captures the agent's answer, stdout must carry only the
+# extracted command, so oprint accumulates here instead of printing and
+# tprint (tool echo) stays silent. None means normal (streaming) output.
+_native_buffer: list[str] | None = None
+
+# Wraps the user's request for --native: read-only agents that must
+# emit a runnable command, nothing else. The shell's own prompt line is
+# where the user reviews and runs it, so no prose ever belongs here.
+NATIVE_INSTRUCTION = (
+    "Translate the task below into a single shell command line. Respond "
+    "with ONLY the command — no prose, no explanation, no markdown code "
+    "fences, no leading '$'. Chain steps with '&&' if needed so it stays "
+    "one line. If the task truly cannot be expressed as a command, output "
+    "nothing.\n\nTask: {task}"
+)
+
 
 def oprint(*args, **kwargs):
+    if _native_buffer is not None:
+        _native_buffer.append(" ".join(str(a) for a in args))
+        return
     spinner = _active_spinner
     if spinner is not None and spinner.enabled:
         spinner.emit(sys.stdout, *args, **kwargs)
@@ -370,6 +392,8 @@ def tprint(*args, **kwargs):
 
     Errors and warnings must use eprint so they survive quiet mode.
     """
+    if _native_buffer is not None:
+        return
     if not QUIET:
         eprint(*args, **kwargs)
 
@@ -562,6 +586,116 @@ def read_piped_stdin() -> str:
     return data.strip("\n")
 
 
+def extract_command(text: str) -> str:
+    """Reduce an agent answer to one runnable command line.
+
+    Models mostly obey the "command only" instruction, but occasionally
+    wrap it in a code fence, backticks, or a stray prose line — so parse
+    defensively and emit the first command-like line, or "" if none.
+    """
+    text = text.strip()
+    if not text:
+        return ""
+    fence = re.search(r"```[^\n]*\n(.*?)```", text, re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    for i, line in enumerate(lines):
+        # Skip a prose lead-in ("Here's the command:") when a real line
+        # follows, but keep a lone line even if it ends with a colon.
+        if line.endswith(":") and i + 1 < len(lines):
+            continue
+        if line.startswith("`") and line.endswith("`") and len(line) > 1:
+            line = line[1:-1].strip()
+        line = re.sub(r"^\$\s+", "", line)  # drop a copied shell prompt
+        return line
+    return ""
+
+
+RC_FILES = {"zsh": ".zshrc", "bash": ".bashrc"}
+NATIVE_MARKER = "# @ native shell (added by '@ --native-shell-enable')"
+
+
+def detect_shell() -> str:
+    name = Path(os.environ.get("SHELL", "")).name
+    return name if name in RC_FILES else ""
+
+
+def native_shell_snippet(shell: str) -> str:
+    """The @@ shell function: '@@ <request>' asks @ for one command.
+
+    zsh prefills it on the real prompt line (print -z) so cd/export/etc.
+    land in the live shell once the user hits Enter. bash has no print -z,
+    so it offers the command in an editable read prompt instead.
+    """
+    if shell == "zsh":
+        return (
+            '# @ native shell for zsh. Load with:  eval "$(@ --native-shell zsh)"\n'
+            "# '@@ <request>' asks @ for a shell command and prefills it on your\n"
+            "# prompt line, unexecuted — read it, edit if needed, press Enter.\n"
+            "@@() {\n"
+            "  local __at_cmd\n"
+            '  __at_cmd="$(command @ --native "$*")" || return\n'
+            '  [ -n "$__at_cmd" ] && print -z -- "$__at_cmd"\n'
+            "}\n"
+        )
+    return (
+        '# @ native shell for bash. Load with:  eval "$(@ --native-shell bash)"\n'
+        "# '@@ <request>' asks @ for a shell command and offers it in an\n"
+        "# editable prompt — edit if needed, press Enter to run it.\n"
+        "@@() {\n"
+        "  local __at_cmd __at_line\n"
+        '  __at_cmd="$(command @ --native "$*")" || return\n'
+        '  [ -n "$__at_cmd" ] || return\n'
+        "  read -e -p '$ ' -i \"$__at_cmd\" __at_line || return\n"
+        '  [ -n "$__at_line" ] && eval "$__at_line"\n'
+        "}\n"
+    )
+
+
+def native_shell_enable(shell: str | None) -> int:
+    if not shell:
+        shell = detect_shell()
+    if shell not in RC_FILES:
+        eprint("@: usage: @ --native-shell-enable [zsh|bash]")
+        if not shell:
+            eprint("   (could not detect your shell from $SHELL)")
+        return 2
+    rc = Path.home() / RC_FILES[shell]
+    line = f'eval "$(@ --native-shell {shell})"'
+    try:
+        existing = rc.read_text() if rc.exists() else ""
+    except OSError as exc:
+        eprint(f"@: cannot read {rc}: {exc}")
+        return 1
+    if NATIVE_MARKER in existing or line in existing:
+        print(f"@ native shell already enabled in {rc}")
+        return 0
+    try:
+        with rc.open("a") as fh:
+            fh.write(f"\n{NATIVE_MARKER}\n{line}\n")
+    except OSError as exc:
+        eprint(f"@: cannot write {rc}: {exc}")
+        return 1
+    print(f"@ added the @@ function to {rc}")
+    print(f"  restart your shell or run:  source {rc}")
+    print("  then:  @@ <request>")
+    return 0
+
+
+def run_native(root: Path, backend: str, prompt: str, state: dict) -> int:
+    """Ask the backend (read-only) for one shell command; print only it."""
+    global MODE, _native_buffer
+    MODE = "plan"  # never let a --native run act; it only advises
+    _native_buffer = []
+    rc = RUNNERS[backend](root, NATIVE_INSTRUCTION.format(task=prompt), state)
+    command = extract_command("\n".join(_native_buffer))
+    _native_buffer = None
+    if command:
+        print(command)
+    return rc
+
+
 def completion_script(shell: str) -> str:
     """Completion script for zsh or bash, built from the real command,
     backend and spinner-style lists so it can never drift from them.
@@ -600,7 +734,7 @@ _at_agent() {{
         matches=(${{(f)"$(command @ --saved-names 2>/dev/null)"}})
         (( ${{#matches}} )) && _values 'conversation' $matches
         return ;;
-      --completion)
+      --completion|--native-shell|--native-shell-enable)
         _values 'shell' zsh bash; return ;;
       --color)
         _values 'color' {colors}; return ;;
@@ -634,7 +768,7 @@ _at_agent() {{
       --switch|--forget)
         local IFS=$'\\n'
         COMPREPLY=( $(compgen -W "$(command @ --saved-names 2>/dev/null)" -- "$cur") ) ;;
-      --completion)
+      --completion|--native-shell|--native-shell-enable)
         COMPREPLY=( $(compgen -W "zsh bash" -- "$cur") ) ;;
       --color)
         COMPREPLY=( $(compgen -W "{colors}" -- "$cur") ) ;;
@@ -722,6 +856,11 @@ Asking / Executing:
   @ -q <instruction>          Quiet: no spinner or tool echo, answer only
   @ --on <backend> <instr>    One-shot on another backend, nothing saved
 
+Shell integration (zsh/bash):
+  @ --native <instruction>    Print one shell command for the request
+  @ --native-shell <sh>       Print the @@ prefill function (for eval)
+  @ --native-shell-enable     Add the @@ function to your shell rc file
+
 Backend Configuration:
   @ --use <backend>           Set repo backend: codex|claude|opencode|gemini
   @ --default [backend]       Show or set your default backend (all repos)
@@ -767,6 +906,13 @@ Modes:
   Normal runs may edit workspace files. '--plan' is read-only on every
   backend. '--yolo' auto-approves everything the backend allows — per
   call only, never saved as a default.
+
+Shell integration:
+  '@ --native-shell-enable' adds a small '@@' function to your shell.
+  Then '@@ <request>' asks the agent (read-only) for one command and
+  prefills it on your prompt line (zsh) so cd/export/etc. affect your
+  own shell once you press Enter. zsh prefills; bash offers an editable
+  line. Nothing runs until you do.
 
 State:
   ~/.local/state/at-agent/   (or $XDG_STATE_HOME/at-agent)
@@ -1338,6 +1484,30 @@ def main(argv: list[str]) -> int:
         if piped:
             prompt = f"{prompt}\n\nPiped input:\n{piped}"
         return RUNNERS[choice](root, prompt, state)
+
+    if command == "native":
+        prompt = " ".join(args).strip()
+        if not prompt:
+            eprint("@: usage: @ --native <instruction>")
+            return 2
+        piped = read_piped_stdin()
+        if piped:
+            prompt = f"{prompt}\n\nPiped input:\n{piped}"
+        return run_native(root, backend, prompt, state)
+
+    if command == "native-shell":
+        shell = args[0].lower() if len(args) == 1 else ""
+        if shell not in ("zsh", "bash"):
+            eprint("@: usage: @ --native-shell zsh|bash")
+            return 2
+        print(native_shell_snippet(shell), end="")
+        return 0
+
+    if command == "native-shell-enable":
+        if len(args) > 1:
+            eprint("@: usage: @ --native-shell-enable [zsh|bash]")
+            return 2
+        return native_shell_enable(args[0].lower() if args else None)
 
     if command == "status":
         if args:
